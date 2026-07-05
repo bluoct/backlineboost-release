@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backline Boost Help</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --accent: #f5a325;
+      --accent-strong: #c96f12;
+      --text: CanvasText;
+      --secondary: color-mix(in srgb, CanvasText 62%, Canvas 38%);
+      --muted: color-mix(in srgb, CanvasText 42%, Canvas 58%);
+      --surface: Canvas;
+      --panel: color-mix(in srgb, CanvasText 6%, Canvas 94%);
+      --border: color-mix(in srgb, CanvasText 18%, Canvas 82%);
+      --code: color-mix(in srgb, CanvasText 8%, Canvas 92%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background: var(--surface);
+      font: -apple-system-body;
+      line-height: 1.48;
+    }
+
+    a {
+      color: var(--accent-strong);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 246px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 24px 18px;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+    }
+
+    nav h1 {
+      margin: 0 0 4px;
+      font: -apple-system-title2;
+      font-weight: 700;
+    }
+
+    nav p {
+      margin: 0 0 18px;
+      color: var(--secondary);
+      font: -apple-system-subheadline;
+    }
+
+    nav a {
+      display: block;
+      padding: 7px 10px;
+      margin: 2px 0;
+      color: var(--text);
+      border-radius: 8px;
+      font: -apple-system-body;
+    }
+
+    nav a:hover {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      text-decoration: none;
+    }
+
+    main {
+      max-width: 920px;
+      padding: 34px 44px 56px;
+    }
+
+    header {
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font: -apple-system-large-title;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+
+    header p {
+      margin: 0;
+      max-width: 720px;
+      color: var(--secondary);
+      font: -apple-system-title3;
+    }
+
+    section {
+      margin: 0 0 38px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      padding-top: 4px;
+      font: -apple-system-title1;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 24px 0 9px;
+      font: -apple-system-title3;
+      font-weight: 680;
+    }
+
+    p {
+      margin: 0 0 12px;
+    }
+
+    ul,
+    ol {
+      padding-left: 1.35rem;
+      margin: 0 0 14px;
+    }
+
+    li {
+      margin: 5px 0;
+    }
+
+    code {
+      padding: 1px 5px;
+      border-radius: 5px;
+      background: var(--code);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.93em;
+    }
+
+    pre {
+      overflow: auto;
+      padding: 12px 14px;
+      border-radius: 9px;
+      background: var(--code);
+      border: 1px solid var(--border);
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+    }
+
+    .callout {
+      padding: 13px 15px;
+      border: 1px solid color-mix(in srgb, var(--accent) 46%, var(--border) 54%);
+      border-left: 4px solid var(--accent);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--accent) 10%, Canvas 90%);
+      margin: 14px 0;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin: 16px 0;
+    }
+
+    .card {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: color-mix(in srgb, CanvasText 4%, Canvas 96%);
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    .small {
+      color: var(--secondary);
+      font: -apple-system-subheadline;
+    }
+
+    @media (max-width: 760px) {
+      .shell {
+        display: block;
+      }
+
+      nav {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      main {
+        padding: 28px 24px 44px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <nav aria-label="Help sections">
+      <h1>Backline Boost Help</h1>
+      <p>User guide and notices</p>
+      <a href="#quick-start">Quick Start</a>
+      <a href="#manual">User Manual</a>
+      <a href="#library">Library View</a>
+      <a href="#rendering">Rendering</a>
+      <a href="#player">Player View</a>
+      <a href="#mini-player">Mini-player</a>
+      <a href="#playlists">Playlists</a>
+      <a href="#preferences">Preferences</a>
+      <a href="#install">Install</a>
+      <a href="#readme">README</a>
+      <a href="#legal">Legal Notices</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+    </nav>
+
+    <main>
+      <header>
+        <h1>Backline Boost</h1>
+        <p>A local macOS practice player for drummers, with Original, Drum Boost, and Drumless playback modes.</p>
+      </header>
+
+      <section id="quick-start">
+        <h2>Quick Start</h2>
+        <ol>
+          <li>Import supported local audio files with <code>Import Track</code>, <code>Import Folder</code>, or drag and drop from Finder or the Apple Music app.</li>
+          <li>Play immediately: every imported track is available as <code>Original</code> right away.</li>
+          <li>Backline Boost renders Drums and Drumless in the background, one track at a time.</li>
+          <li>When a track's render finishes, <code>Drum Boost</code> and <code>Drumless</code> light up automatically.</li>
+          <li>Practice in the Player and tune the drum boost live while you play.</li>
+        </ol>
+        <div class="callout">
+          <strong>Drum Boost is a live mix.</strong>
+          Backline Boost does not create a fixed boosted full-song file. It renders Drums and Drumless once, then mixes them live using the saved drum boost value for that song.
+        </div>
+      </section>
+
+      <section id="manual">
+        <h2>User Manual</h2>
+        <div class="grid" aria-label="Playback modes">
+          <div class="card">
+            <strong>Original</strong>
+            Plays the managed copy of the imported song.
+          </div>
+          <div class="card">
+            <strong>Drum Boost</strong>
+            Live-mixes Drums and Drumless with the saved per-song boost setting.
+          </div>
+          <div class="card">
+            <strong>Drumless</strong>
+            Plays the separated backing track without drums.
+          </div>
+        </div>
+        <p>Backline Boost stores each song locally and reads embedded title, artist, album, and artwork metadata when available. It does not stream from Apple Music, Spotify, or other subscription libraries.</p>
+      </section>
+
+      <section id="library">
+        <h2>Library View</h2>
+        <p>The Library is the home screen for imported tracks.</p>
+        <ul>
+          <li><code>Import Track</code> imports one or more supported audio files.</li>
+          <li><code>Import Folder</code> imports supported top-level audio files in a folder.</li>
+          <li>Drag and drop works for supported local audio files, from Finder or directly from the Apple Music app.</li>
+          <li>Re-importing a file that is already in your library is skipped with an <code>Already in library</code> notice.</li>
+          <li>Single-click a rendered track to inspect it without stealing active playback.</li>
+          <li>Double-click a rendered track title to play it from <code>0:00</code>.</li>
+          <li>Deleting a track asks for confirmation, then removes Backline Boost-managed source, artwork, and active render files for that track.</li>
+        </ul>
+      </section>
+
+      <section id="rendering">
+        <h2>Rendering</h2>
+        <p>Every import automatically queues a full-track separation; there is nothing to configure up front.</p>
+        <ul>
+          <li>Imported tracks play as <code>Original</code> immediately while they wait to render.</li>
+          <li>Renders run one at a time in the background; the Library shows each track's stage or queue position.</li>
+          <li>One full-track separation produces durable Drums and Drumless assets.</li>
+          <li><code>Drum Boost</code> live-mixes those two files, so the boost is adjustable in the Player at any time — raising drums also lowers the backing mix enough to keep the level steadier.</li>
+          <li>A failed render shows a retry button on the Library row and in the Player.</li>
+          <li>Renders resume automatically after quitting or relaunching the app.</li>
+          <li>The render output folder and quality are configurable in Preferences.</li>
+        </ul>
+      </section>
+
+      <section id="player">
+        <h2>Player View</h2>
+        <p>The Player is the full practice surface for one track.</p>
+        <ul>
+          <li>Switch among <code>Original</code>, <code>Drum Boost</code>, and <code>Drumless</code>.</li>
+          <li>Use previous, seek back 15 seconds, play/pause, seek forward 15 seconds, and next.</li>
+          <li>Click or drag the progress bar to scrub.</li>
+          <li>Adjust the saved drum boost for the song.</li>
+          <li>Use pitch-preserving practice speed from <code>0.5x</code> to <code>1.5x</code>.</li>
+          <li>Double-click the speed slider to reset to <code>1.0x</code>.</li>
+          <li>Loop the full song or set A/B section markers on the waveform timeline.</li>
+        </ul>
+      </section>
+
+      <section id="mini-player">
+        <h2>Mini-player</h2>
+        <p>The Mini-player stays at the bottom of the app and controls active playback.</p>
+        <ul>
+          <li>Click the track area to open the Player view.</li>
+          <li>Use transport buttons, 15-second seeking, repeat, shuffle, and scrub controls.</li>
+          <li>Click or drag the volume bar to adjust active playback volume.</li>
+          <li>Use the source tag to cycle the active playback source.</li>
+          <li>If the selected source is missing, Backline Boost falls back to <code>Original</code>.</li>
+        </ul>
+      </section>
+
+      <section id="playlists">
+        <h2>Playlists</h2>
+        <p>Playlists are saved practice queues.</p>
+        <ul>
+          <li>Create, rename, populate, reorder, play, and delete playlists.</li>
+          <li>Deleting a playlist does not delete library tracks or audio assets.</li>
+          <li>Choose a playlist default source such as <code>Drum Boost</code> or <code>Drumless</code>.</li>
+          <li>Double-click a playlist item to start that track in the playlist queue.</li>
+          <li>Drum boost values are stored per song, not per playlist.</li>
+        </ul>
+      </section>
+
+      <section id="preferences">
+        <h2>Preferences</h2>
+        <p>Open Backline Boost Settings (<code>⌘,</code>). The window has four sections:</p>
+        <ul>
+          <li><strong>Playback</strong> — <code>Normalize playback volume</code>, a loudness assist that evens out big volume jumps between songs (it boosts quieter tracks more than it reins in loud ones) and applies across Original, Drum Boost, and Drumless.</li>
+          <li><strong>Audio tools</strong> — optional explicit paths for <code>demucs</code> and <code>ffmpeg</code>, each with a live "Using…" or "Not found" status. Leave blank to auto-detect.</li>
+          <li><strong>Rendering</strong> — choose a custom renders folder (or reset to default) and set the render quality (bitrate) for new renders.</li>
+          <li><strong>Diagnostics</strong> — <code>Write debug log</code> captures the app's system log to <code>debug.log</code> while enabled; use Reveal in Finder to share it.</li>
+        </ul>
+      </section>
+
+      <section id="install">
+        <h2>Install</h2>
+        <p>Backline Boost is currently a local macOS prototype built from source. There is not yet a signed, notarized installer package.</p>
+        <h3>Requirements</h3>
+        <ul>
+          <li>macOS 14 or newer.</li>
+          <li>Xcode or Apple Command Line Tools with Swift 6 support.</li>
+          <li><code>ffmpeg</code> for analysis, waveform, loudness, and render support.</li>
+          <li><code>demucs</code> for source separation.</li>
+        </ul>
+        <h3>Build and launch</h3>
+        <pre><code>./script/build_and_run.sh run</code></pre>
+        <p>For normal local use, double-click <code>Launch Backline Boost.command</code> in the repo.</p>
+      </section>
+
+      <section id="readme">
+        <h2>README</h2>
+        <p><strong>Backline Boost</strong> is an audio player for drummers.</p>
+        <p>Repo documentation includes the user manual, install guide, and legal notices. In the app, use this Help window for the same core guidance without leaving Backline Boost.</p>
+      </section>
+
+      <section id="legal">
+        <h2>Legal Notices</h2>
+        <p>This section summarizes the current project notices. It is not legal advice.</p>
+        <h3>Backline Boost License</h3>
+        <p>Backline Boost is licensed under the GNU General Public License version 3. Include the GPLv3 license text and corresponding source code when distributing Backline Boost.</p>
+        <h3>External Helper Tools</h3>
+        <ul>
+          <li><strong>FFmpeg:</strong> Backline Boost invokes <code>ffmpeg</code> for analysis, waveform/loudness support, and render-related audio processing. FFmpeg states that it is LGPL 2.1 or later by default, with optional GPL-covered parts depending on build configuration. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.</li>
+          <li><strong>Demucs:</strong> Backline Boost invokes <code>demucs</code> for source separation. Demucs is licensed under the MIT License. Its license notice includes: Copyright (c) Meta Platforms, Inc. and affiliates.</li>
+        </ul>
+        <h3>User-provided audio</h3>
+        <p>Backline Boost processes audio files imported by the user. Backline Boost does not grant rights to copy, modify, stem-separate, export, or redistribute those songs. Users are responsible for having the rights required for the audio they import and any outputs they create.</p>
+      </section>
+
+      <section id="troubleshooting">
+        <h2>Troubleshooting</h2>
+        <h3>Demucs not available</h3>
+        <p>Original playback still works, but stem separation (Drum Boost and Drumless) needs <code>demucs</code>. A repo-local virtual environment at <code>.venv/bin</code> is the most predictable setup.</p>
+        <pre><code>./.venv/bin/demucs --help</code></pre>
+        <h3>FFmpeg not available</h3>
+        <p>Install or expose <code>ffmpeg</code>. Backline Boost checks common Homebrew/MacPorts paths, the app process PATH, and <code>.venv/bin</code>.</p>
+        <pre><code>ffmpeg -version</code></pre>
+        <h3>Drum Boost or Drumless plays Original</h3>
+        <p>The separated assets are not ready for that track yet. Wait for its status to reach Ready, or use Retry render if it failed. Backline Boost falls back to Original so playback remains usable.</p>
+        <h3>macOS asks for permission on a Music drag</h3>
+        <p>The first Apple Music drag shows a one-time system prompt asking to access Apple Music and your media library. Approve it &mdash; Backline Boost reads the dragged track&rsquo;s file from your Music library and fetches its album artwork from Music&rsquo;s database (Apple Music keeps artwork there, not inside the audio file). If you declined, grant it later in System Settings &#9656; Privacy &amp; Security &#9656; Media &amp; Apple Music.</p>
+
+        <h3>Apple Music drag does nothing</h3>
+        <p>Dragging a track directly from the Apple Music app works for local, purchased, or DRM-free downloaded songs that have a real audio file behind them. A protected Apple Music download (<code>.m4p</code>) is DRM-encrypted &mdash; Backline Boost can&rsquo;t decode or separate it, so dropping one shows a &ldquo;Can&rsquo;t import this track&rdquo; message. A subscription item that isn&rsquo;t downloaded has no local file at all. Either way, use a purchased or file copy of the song, or drag it in from Finder.</p>
+      </section>
+
+      <p class="small">Last updated: 2026-07-04</p>
+    </main>
+  </div>
+</body>
+</html>

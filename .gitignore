@@ -1,0 +1,38 @@
+.DS_Store
+
+# Swift Package Manager and build products
+.build/
+.swiftpm/
+Package.resolved
+DerivedData/
+dist/
+
+# Xcode and Apple build artifacts
+xcuserdata/
+*.xcuserdata/
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+timeline.xctimeline
+playground.xcworkspace
+
+# Local Python and tool caches
+.venv/
+.backbeat-temp/
+
+# Backbeat local audio data
+AppAudioLibrary/
+renders/
+# Local sample audio at the repo root (untracked)
+/*.m4a
+
+# Diagnostics capture (Settings ▸ Diagnostics ▸ Write debug log)
+debug.log
+
+# Optional dependency manager outputs
+Carthage/Build/
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
