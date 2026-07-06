@@ -26,6 +26,11 @@ public final class LibraryStore {
     public var practiceLoopMode: PracticeLoopMode
     public var practiceLoopRange: PracticeLoopRange?
     public var isPracticeZoomVisible: Bool
+    // Sidebar section chrome. Unlike `isPracticeZoomVisible` (bound to an active
+    // practice session) these are durable view preferences, so they persist.
+    public var isPlaylistsSectionCollapsed: Bool
+    public var isTracksSectionCollapsed: Bool
+    public var isPlaylistOverflowExpanded: Bool
 
     public init(
         tracks: [BackbeatTrack] = [],
@@ -43,7 +48,10 @@ public final class LibraryStore {
         isPlaybackPlaying: Bool = false,
         volume: Double = 0.8,
         playbackNormalizationSettings: PlaybackNormalizationSettings = .default,
-        renderFailureMessage: String? = nil
+        renderFailureMessage: String? = nil,
+        isPlaylistsSectionCollapsed: Bool = false,
+        isTracksSectionCollapsed: Bool = false,
+        isPlaylistOverflowExpanded: Bool = false
     ) {
         self.tracks = tracks
         self.selectedTrackID = selectedTrackID
@@ -67,6 +75,9 @@ public final class LibraryStore {
         self.practiceLoopMode = .off
         self.practiceLoopRange = nil
         self.isPracticeZoomVisible = false
+        self.isPlaylistsSectionCollapsed = isPlaylistsSectionCollapsed
+        self.isTracksSectionCollapsed = isTracksSectionCollapsed
+        self.isPlaylistOverflowExpanded = isPlaylistOverflowExpanded
     }
 
     public var selectedTrack: BackbeatTrack? {

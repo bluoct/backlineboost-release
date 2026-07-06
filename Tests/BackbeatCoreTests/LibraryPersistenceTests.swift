@@ -180,6 +180,50 @@ final class LibraryPersistenceTests: XCTestCase {
         XCTAssertEqual(loaded.playbackNormalizationSettings, .default)
     }
 
+    func testSnapshotRoundTripsSidebarSectionCollapseState() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-persistence-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = root.appendingPathComponent("library.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let snapshot = LibrarySnapshot(
+            tracks: [],
+            selectedTrackID: nil,
+            volume: 0.8,
+            isPlaylistsSectionCollapsed: true,
+            isTracksSectionCollapsed: true,
+            isPlaylistOverflowExpanded: true
+        )
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+
+        try persistence.save(snapshot)
+        let loaded = try XCTUnwrap(persistence.load())
+
+        XCTAssertEqual(loaded, snapshot)
+        XCTAssertTrue(loaded.makeStore().isPlaylistsSectionCollapsed)
+        XCTAssertTrue(loaded.makeStore().isTracksSectionCollapsed)
+        XCTAssertTrue(loaded.makeStore().isPlaylistOverflowExpanded)
+    }
+
+    func testOlderSnapshotDefaultsSidebarSectionCollapseState() throws {
+        let data = """
+        {
+          "schemaVersion" : 1,
+          "tracks" : [],
+          "selectedTrackID" : null,
+          "selectedPlaybackVariant" : "boostedDrums",
+          "nowPlayingPlaybackVariant" : "boostedDrums",
+          "volume" : 0.8
+        }
+        """.data(using: .utf8)!
+
+        let loaded = try JSONDecoder().decode(LibrarySnapshot.self, from: data)
+
+        XCTAssertFalse(loaded.isPlaylistsSectionCollapsed)
+        XCTAssertFalse(loaded.isTracksSectionCollapsed)
+        XCTAssertFalse(loaded.isPlaylistOverflowExpanded)
+    }
+
     func testLoadReturnsNilWhenSnapshotDoesNotExist() throws {
         let snapshotURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-backbeat-\(UUID().uuidString)")

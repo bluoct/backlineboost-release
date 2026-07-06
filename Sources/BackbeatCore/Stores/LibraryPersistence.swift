@@ -55,6 +55,9 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
     public let nowPlayingPlaybackSource: PlaybackSource
     public let volume: Double
     public let playbackNormalizationSettings: PlaybackNormalizationSettings
+    public let isPlaylistsSectionCollapsed: Bool
+    public let isTracksSectionCollapsed: Bool
+    public let isPlaylistOverflowExpanded: Bool
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -70,6 +73,9 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         case nowPlayingPlaybackSource
         case volume
         case playbackNormalizationSettings
+        case isPlaylistsSectionCollapsed
+        case isTracksSectionCollapsed
+        case isPlaylistOverflowExpanded
     }
 
     public init(
@@ -85,7 +91,10 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         selectedPlaybackSource: PlaybackSource? = nil,
         nowPlayingPlaybackSource: PlaybackSource? = nil,
         playbackNormalizationSettings: PlaybackNormalizationSettings = .default,
-        volume: Double
+        volume: Double,
+        isPlaylistsSectionCollapsed: Bool = false,
+        isTracksSectionCollapsed: Bool = false,
+        isPlaylistOverflowExpanded: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.tracks = tracks
@@ -100,6 +109,9 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         self.nowPlayingPlaybackSource = nowPlayingPlaybackSource ?? PlaybackSource(renderVariant: self.nowPlayingPlaybackVariant)
         self.volume = volume
         self.playbackNormalizationSettings = playbackNormalizationSettings
+        self.isPlaylistsSectionCollapsed = isPlaylistsSectionCollapsed
+        self.isTracksSectionCollapsed = isTracksSectionCollapsed
+        self.isPlaylistOverflowExpanded = isPlaylistOverflowExpanded
     }
 
     // Missing keys default silently (forward compatibility); a key that is
@@ -158,6 +170,9 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             PlaybackNormalizationSettings.self,
             forKey: .playbackNormalizationSettings
         ) ?? .default
+        isPlaylistsSectionCollapsed = try container.decodeIfPresent(Bool.self, forKey: .isPlaylistsSectionCollapsed) ?? false
+        isTracksSectionCollapsed = try container.decodeIfPresent(Bool.self, forKey: .isTracksSectionCollapsed) ?? false
+        isPlaylistOverflowExpanded = try container.decodeIfPresent(Bool.self, forKey: .isPlaylistOverflowExpanded) ?? false
     }
 
     @MainActor
@@ -174,7 +189,10 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             selectedPlaybackSource: store.selectedPlaybackSource,
             nowPlayingPlaybackSource: store.nowPlayingPlaybackSource,
             playbackNormalizationSettings: store.playbackNormalizationSettings,
-            volume: store.volume
+            volume: store.volume,
+            isPlaylistsSectionCollapsed: store.isPlaylistsSectionCollapsed,
+            isTracksSectionCollapsed: store.isTracksSectionCollapsed,
+            isPlaylistOverflowExpanded: store.isPlaylistOverflowExpanded
         )
     }
 
@@ -208,7 +226,10 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             isPlaybackPlaying: false,
             volume: volume,
             playbackNormalizationSettings: playbackNormalizationSettings,
-            renderFailureMessage: nil
+            renderFailureMessage: nil,
+            isPlaylistsSectionCollapsed: isPlaylistsSectionCollapsed,
+            isTracksSectionCollapsed: isTracksSectionCollapsed,
+            isPlaylistOverflowExpanded: isPlaylistOverflowExpanded
         )
     }
 }
@@ -373,7 +394,10 @@ public struct LibraryPersistence: Sendable {
             selectedPlaybackSource: snapshot.selectedPlaybackSource,
             nowPlayingPlaybackSource: snapshot.nowPlayingPlaybackSource,
             playbackNormalizationSettings: snapshot.playbackNormalizationSettings,
-            volume: snapshot.volume
+            volume: snapshot.volume,
+            isPlaylistsSectionCollapsed: snapshot.isPlaylistsSectionCollapsed,
+            isTracksSectionCollapsed: snapshot.isTracksSectionCollapsed,
+            isPlaylistOverflowExpanded: snapshot.isPlaylistOverflowExpanded
         )
     }
 

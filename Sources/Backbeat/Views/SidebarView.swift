@@ -50,27 +50,13 @@ struct SidebarView: View {
             .padding(.horizontal, 12)
             .padding(.top, 18)
 
-            Text("Tracks")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .textCase(.uppercase)
-                .tracking(1.5)
-                .foregroundStyle(BackbeatStyle.mutedText)
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-                .padding(.bottom, 10)
-
             ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(Array(store.tracks.enumerated()), id: \.element.id) { index, track in
-                        sidebarRow(track, index: index)
-                    }
+                VStack(alignment: .leading, spacing: 0) {
+                    playlistsSection
+                    sectionDivider
+                    tracksSection
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 12)
-
-                playlistsSection
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 18)
+                .padding(.bottom, 18)
             }
         }
         .frame(width: 268)
@@ -115,45 +101,181 @@ struct SidebarView: View {
         }
     }
 
+    // Playlists are capped in the sidebar so a long track list can't bury them;
+    // the rest stay one tap away behind "Show N more".
+    private var playlistDisplayLimit: Int { 3 }
+
+    private var visiblePlaylists: [BackbeatPlaylist] {
+        guard !store.isPlaylistOverflowExpanded else { return store.playlists }
+        return Array(store.playlists.prefix(playlistDisplayLimit))
+    }
+
     private var playlistsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Playlists")
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(BackbeatStyle.mutedText)
-                Spacer()
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                sectionToggle(
+                    title: "Playlists",
+                    count: store.playlists.count,
+                    isCollapsed: store.isPlaylistsSectionCollapsed
+                ) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        store.isPlaylistsSectionCollapsed.toggle()
+                    }
+                }
                 Button {
                     let playlist = store.createPlaylist()
                     route = .playlist(playlist.id)
                 } label: {
                     Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(BackbeatStyle.secondaryText)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("New Playlist")
             }
-            ForEach(store.playlists) { playlist in
-                Button {
-                    store.selectedPlaylistID = playlist.id
-                    route = .playlist(playlist.id)
-                } label: {
-                    HStack {
-                        Image(systemName: "music.note.list")
-                        Text(playlist.name)
-                            .lineLimit(1)
-                        Spacer()
-                        Text("\(playlist.trackIDs.count)")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(BackbeatStyle.secondaryText)
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 10)
+
+            if !store.isPlaylistsSectionCollapsed {
+                if store.playlists.isEmpty {
+                    Text("No playlists yet")
+                        .font(.system(size: 12))
+                        .foregroundStyle(BackbeatStyle.mutedText)
+                        .padding(.horizontal, 22)
+                        .padding(.bottom, 6)
+                } else {
+                    VStack(spacing: 2) {
+                        ForEach(visiblePlaylists) { playlist in
+                            playlistRow(playlist)
+                        }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(
-                        store.selectedPlaylistID == playlist.id ? BackbeatStyle.panelRaised : .clear,
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
+                    .padding(.horizontal, 12)
+
+                    if store.playlists.count > playlistDisplayLimit {
+                        showMorePlaylistsButton
+                    }
                 }
-                .buttonStyle(.plain)
             }
         }
+    }
+
+    private var showMorePlaylistsButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                store.isPlaylistOverflowExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(store.isPlaylistOverflowExpanded ? 180 : 0))
+                Text(store.isPlaylistOverflowExpanded
+                    ? "Show less"
+                    : "Show \(store.playlists.count - playlistDisplayLimit) more")
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(BackbeatStyle.mutedText)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func playlistRow(_ playlist: BackbeatPlaylist) -> some View {
+        Button {
+            store.selectedPlaylistID = playlist.id
+            route = .playlist(playlist.id)
+        } label: {
+            HStack {
+                Image(systemName: "music.note.list")
+                Text(playlist.name)
+                    .lineLimit(1)
+                Spacer()
+                Text("\(playlist.trackIDs.count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(BackbeatStyle.secondaryText)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                store.selectedPlaylistID == playlist.id ? BackbeatStyle.panelRaised : .clear,
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var tracksSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sectionToggle(
+                title: "Tracks",
+                count: store.tracks.count,
+                isCollapsed: store.isTracksSectionCollapsed
+            ) {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    store.isTracksSectionCollapsed.toggle()
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 10)
+
+            if !store.isTracksSectionCollapsed {
+                LazyVStack(spacing: 4) {
+                    ForEach(Array(store.tracks.enumerated()), id: \.element.id) { index, track in
+                        sidebarRow(track, index: index)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 12)
+            }
+        }
+    }
+
+    private var sectionDivider: some View {
+        Rectangle()
+            .fill(BackbeatStyle.border)
+            .frame(height: 1)
+            .opacity(0.7)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+    }
+
+    // A section header that collapses its body on tap. The item count stays
+    // visible so a collapsed section still says what's inside; the chevron
+    // rotates to point right when collapsed.
+    private func sectionToggle(
+        title: String,
+        count: Int,
+        isCollapsed: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(BackbeatStyle.secondaryText)
+                    .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                Text(title)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(1.5)
+                    .foregroundStyle(BackbeatStyle.mutedText)
+                Spacer(minLength: 6)
+                Text("\(count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(BackbeatStyle.mutedText)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(count) items, \(isCollapsed ? "collapsed" : "expanded")")
+        .accessibilityAddTraits(.isButton)
     }
 
     private func sidebarRow(_ track: BackbeatTrack, index: Int) -> some View {
