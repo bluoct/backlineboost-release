@@ -345,10 +345,9 @@
 
       <section id="preferences">
         <h2>Preferences</h2>
-        <p>Open Backline Boost Settings (<code>⌘,</code>). The window has four sections:</p>
+        <p>Open Backline Boost Settings (<code>⌘,</code>). The window has three sections:</p>
         <ul>
           <li><strong>Playback</strong> — <code>Normalize playback volume</code>, a loudness assist that evens out big volume jumps between songs (it boosts quieter tracks more than it reins in loud ones) and applies across Original, Drum Boost, and Drumless.</li>
-          <li><strong>Audio tools</strong> — optional explicit paths for <code>demucs</code> and <code>ffmpeg</code>, each with a live "Using…" or "Not found" status. Leave blank to auto-detect.</li>
           <li><strong>Rendering</strong> — choose a custom renders folder (or reset to default) and set the render quality (bitrate) for new renders.</li>
           <li><strong>Diagnostics</strong> — <code>Write debug log</code> captures the app's system log to <code>debug.log</code> while enabled; use Reveal in Finder to share it.</li>
         </ul>
@@ -361,8 +360,7 @@
         <ul>
           <li>macOS 14 or newer.</li>
           <li>Xcode or Apple Command Line Tools with Swift 6 support.</li>
-          <li><code>ffmpeg</code> for analysis, waveform, loudness, and render support.</li>
-          <li><code>demucs</code> for source separation.</li>
+          <li>No other tools are required — the drum-separation model ships inside the app, and Backline Boost analyzes, separates, and renders entirely on-device with no network access.</li>
         </ul>
         <h3>Build and launch</h3>
         <pre><code>./script/build_and_run.sh run</code></pre>
@@ -380,23 +378,22 @@
         <p>This section summarizes the current project notices. It is not legal advice.</p>
         <h3>Backline Boost License</h3>
         <p>Backline Boost is licensed under the GNU General Public License version 3. Include the GPLv3 license text and corresponding source code when distributing Backline Boost.</p>
-        <h3>External Helper Tools</h3>
+        <h3>Bundled open-source components</h3>
+        <p>Backline Boost separates drums on-device — it no longer invokes any external command-line tool. The separation engine is Backline Boost's own code, built on this MIT-licensed component, whose notice is retained in the source tree and in <code>LEGAL.md</code>:</p>
         <ul>
-          <li><strong>FFmpeg:</strong> Backline Boost invokes <code>ffmpeg</code> for analysis, waveform/loudness support, and render-related audio processing. FFmpeg states that it is LGPL 2.1 or later by default, with optional GPL-covered parts depending on build configuration. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.</li>
-          <li><strong>Demucs:</strong> Backline Boost invokes <code>demucs</code> for source separation. Demucs is licensed under the MIT License. Its license notice includes: Copyright (c) Meta Platforms, Inc. and affiliates.</li>
+          <li><strong>MLX Swift</strong> (Apple) — the array/neural-network framework the separation runs on. Licensed under the MIT License.</li>
         </ul>
+        <p>The MIT License is compatible with Backline Boost's GPLv3 license; the combined work is distributed under GPLv3.</p>
+        <h3>Drum-separation model</h3>
+        <p>Backline Boost ships Meta's published htdemucs (Hybrid Transformer Demucs) model weights inside the app and converts them to its engine's layout on-device — it downloads nothing. The weights come from the Demucs project (Copyright (c) Meta Platforms, Inc. and affiliates), are MIT-licensed, and are published for research purposes. See <code>WEIGHTS.md</code> for the exact provenance (source, version, checksum). Users are responsible for confirming their own rights to use the model for their purposes.</p>
         <h3>User-provided audio</h3>
         <p>Backline Boost processes audio files imported by the user. Backline Boost does not grant rights to copy, modify, stem-separate, export, or redistribute those songs. Users are responsible for having the rights required for the audio they import and any outputs they create.</p>
       </section>
 
       <section id="troubleshooting">
         <h2>Troubleshooting</h2>
-        <h3>Demucs not available</h3>
-        <p>Original playback still works, but stem separation (Drum Boost and Drumless) needs <code>demucs</code>. A repo-local virtual environment at <code>.venv/bin</code> is the most predictable setup.</p>
-        <pre><code>./.venv/bin/demucs --help</code></pre>
-        <h3>FFmpeg not available</h3>
-        <p>Install or expose <code>ffmpeg</code>. Backline Boost checks common Homebrew/MacPorts paths, the app process PATH, and <code>.venv/bin</code>.</p>
-        <pre><code>ffmpeg -version</code></pre>
+        <h3>Separation model isn&rsquo;t ready</h3>
+        <p>The on-device separation model ships inside the app, so it is ready as soon as Backline Boost is installed — nothing to download. The first render after installing (or updating) prepares the model, which can add a few seconds to that one render. If a render fails, use <em>Retry render</em>. Original playback always works.</p>
         <h3>Drum Boost or Drumless plays Original</h3>
         <p>The separated assets are not ready for that track yet. Wait for its status to reach Ready, or use Retry render if it failed. Backline Boost falls back to Original so playback remains usable.</p>
         <h3>macOS asks for permission on a Music drag</h3>
@@ -406,7 +403,7 @@
         <p>Dragging a track directly from the Apple Music app works for local, purchased, or DRM-free downloaded songs that have a real audio file behind them. A protected Apple Music download (<code>.m4p</code>) is DRM-encrypted &mdash; Backline Boost can&rsquo;t decode or separate it, so dropping one shows a &ldquo;Can&rsquo;t import this track&rdquo; message. A subscription item that isn&rsquo;t downloaded has no local file at all. Either way, use a purchased or file copy of the song, or drag it in from Finder.</p>
       </section>
 
-      <p class="small">Last updated: 2026-07-04</p>
+      <p class="small">Last updated: 2026-07-07</p>
     </main>
   </div>
 </body>

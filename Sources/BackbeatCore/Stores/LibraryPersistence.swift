@@ -58,6 +58,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
     public let isPlaylistsSectionCollapsed: Bool
     public let isTracksSectionCollapsed: Bool
     public let isPlaylistOverflowExpanded: Bool
+    public let isTracksOverflowExpanded: Bool
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -76,6 +77,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         case isPlaylistsSectionCollapsed
         case isTracksSectionCollapsed
         case isPlaylistOverflowExpanded
+        case isTracksOverflowExpanded
     }
 
     public init(
@@ -94,7 +96,8 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         volume: Double,
         isPlaylistsSectionCollapsed: Bool = false,
         isTracksSectionCollapsed: Bool = false,
-        isPlaylistOverflowExpanded: Bool = false
+        isPlaylistOverflowExpanded: Bool = false,
+        isTracksOverflowExpanded: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.tracks = tracks
@@ -112,6 +115,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         self.isPlaylistsSectionCollapsed = isPlaylistsSectionCollapsed
         self.isTracksSectionCollapsed = isTracksSectionCollapsed
         self.isPlaylistOverflowExpanded = isPlaylistOverflowExpanded
+        self.isTracksOverflowExpanded = isTracksOverflowExpanded
     }
 
     // Missing keys default silently (forward compatibility); a key that is
@@ -173,6 +177,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         isPlaylistsSectionCollapsed = try container.decodeIfPresent(Bool.self, forKey: .isPlaylistsSectionCollapsed) ?? false
         isTracksSectionCollapsed = try container.decodeIfPresent(Bool.self, forKey: .isTracksSectionCollapsed) ?? false
         isPlaylistOverflowExpanded = try container.decodeIfPresent(Bool.self, forKey: .isPlaylistOverflowExpanded) ?? false
+        isTracksOverflowExpanded = try container.decodeIfPresent(Bool.self, forKey: .isTracksOverflowExpanded) ?? false
     }
 
     @MainActor
@@ -192,7 +197,8 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             volume: store.volume,
             isPlaylistsSectionCollapsed: store.isPlaylistsSectionCollapsed,
             isTracksSectionCollapsed: store.isTracksSectionCollapsed,
-            isPlaylistOverflowExpanded: store.isPlaylistOverflowExpanded
+            isPlaylistOverflowExpanded: store.isPlaylistOverflowExpanded,
+            isTracksOverflowExpanded: store.isTracksOverflowExpanded
         )
     }
 
@@ -229,7 +235,8 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             renderFailureMessage: nil,
             isPlaylistsSectionCollapsed: isPlaylistsSectionCollapsed,
             isTracksSectionCollapsed: isTracksSectionCollapsed,
-            isPlaylistOverflowExpanded: isPlaylistOverflowExpanded
+            isPlaylistOverflowExpanded: isPlaylistOverflowExpanded,
+            isTracksOverflowExpanded: isTracksOverflowExpanded
         )
     }
 }
@@ -397,7 +404,8 @@ public struct LibraryPersistence: Sendable {
             volume: snapshot.volume,
             isPlaylistsSectionCollapsed: snapshot.isPlaylistsSectionCollapsed,
             isTracksSectionCollapsed: snapshot.isTracksSectionCollapsed,
-            isPlaylistOverflowExpanded: snapshot.isPlaylistOverflowExpanded
+            isPlaylistOverflowExpanded: snapshot.isPlaylistOverflowExpanded,
+            isTracksOverflowExpanded: snapshot.isTracksOverflowExpanded
         )
     }
 

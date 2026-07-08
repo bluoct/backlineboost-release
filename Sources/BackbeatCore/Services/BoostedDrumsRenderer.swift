@@ -1,15 +1,5 @@
 import Foundation
 
-public struct CommandSpec: Equatable, Sendable {
-    public let executablePath: String
-    public let arguments: [String]
-
-    public init(executablePath: String, arguments: [String]) {
-        self.executablePath = executablePath
-        self.arguments = arguments
-    }
-}
-
 public struct FourStemURLs: Equatable, Sendable {
     public let drums: URL
     public let bass: URL
@@ -47,26 +37,6 @@ public struct DrumBoostMixGains: Equatable, Sendable {
 
     private static func db(linearGain: Double) -> Double {
         20 * log10(max(linearGain, .leastNonzeroMagnitude))
-    }
-}
-
-public struct DemucsSeparationProfile: Equatable, Sendable {
-    public let device: String?
-    public let overlap: Double
-
-    public init(device: String?, overlap: Double = 0.1) {
-        self.device = device
-        self.overlap = overlap
-    }
-
-    public static let accelerated = DemucsSeparationProfile(device: "mps")
-    public static let tunedCPU = DemucsSeparationProfile(device: nil)
-
-    public var fallbackProfile: DemucsSeparationProfile? {
-        guard device != nil else {
-            return nil
-        }
-        return DemucsSeparationProfile(device: nil, overlap: overlap)
     }
 }
 
@@ -151,114 +121,6 @@ public enum BoostedDrumsRenderPlan {
             && url.deletingPathExtension().lastPathComponent.hasPrefix(prefix)
     }
 
-    public static func demucsCommand(
-        demucsPath: String,
-        sourceURL: URL,
-        separationRootURL: URL,
-        profile: DemucsSeparationProfile = .accelerated
-    ) -> CommandSpec {
-        var arguments = [
-            "--name", "htdemucs",
-            "--out", separationRootURL.path
-        ]
-        if let device = profile.device {
-            arguments.append(contentsOf: ["-d", device])
-        }
-        arguments.append(contentsOf: [
-            "--overlap", decimalString(profile.overlap),
-            sourceURL.path
-        ])
-
-        return CommandSpec(
-            executablePath: demucsPath,
-            arguments: arguments
-        )
-    }
-
-    public static func stemDirectory(separationRootURL: URL, sourceURL: URL) -> URL {
-        separationRootURL
-            .appendingPathComponent("htdemucs", isDirectory: true)
-            .appendingPathComponent(sourceURL.deletingPathExtension().lastPathComponent, isDirectory: true)
-    }
-
-    public static func stemURLs(stemDirectory: URL) -> FourStemURLs {
-        FourStemURLs(
-            drums: stemDirectory.appendingPathComponent("drums.wav"),
-            bass: stemDirectory.appendingPathComponent("bass.wav"),
-            other: stemDirectory.appendingPathComponent("other.wav"),
-            vocals: stemDirectory.appendingPathComponent("vocals.wav")
-        )
-    }
-
-    public static func mixCommand(
-        ffmpegPath: String,
-        stems: FourStemURLs,
-        outputURL: URL,
-        boostDB: Double,
-        bitrate: RenderBitrate = .default
-    ) -> CommandSpec {
-        let gains = DrumBoostMixGains(boostDB: boostDB)
-        let drumGain = dbString(gains.drumGainDB)
-        let backingGain = dbString(gains.backingGainDB)
-        let filter = "[0:a]volume=\(drumGain)dB[drums];[1:a]volume=\(backingGain)dB[bass];[2:a]volume=\(backingGain)dB[other];[3:a]volume=\(backingGain)dB[vocals];[drums][bass][other][vocals]amix=inputs=4:duration=longest:normalize=0,alimiter=limit=0.98[out]"
-        return CommandSpec(
-            executablePath: ffmpegPath,
-            arguments: [
-                "-y",
-                "-i", stems.drums.path,
-                "-i", stems.bass.path,
-                "-i", stems.other.path,
-                "-i", stems.vocals.path,
-                "-filter_complex", filter,
-                "-map", "[out]",
-                "-c:a", "aac",
-                "-b:a", bitrate.ffmpegArgumentValue,
-                outputURL.path
-            ]
-        )
-    }
-
-    public static func drumlessMixCommand(
-        ffmpegPath: String,
-        stems: FourStemURLs,
-        outputURL: URL,
-        bitrate: RenderBitrate = .default
-    ) -> CommandSpec {
-        let filter = "[0:a][1:a][2:a]amix=inputs=3:duration=longest:normalize=0,alimiter=limit=0.98[out]"
-        return CommandSpec(
-            executablePath: ffmpegPath,
-            arguments: [
-                "-y",
-                "-i", stems.bass.path,
-                "-i", stems.other.path,
-                "-i", stems.vocals.path,
-                "-filter_complex", filter,
-                "-map", "[out]",
-                "-c:a", "aac",
-                "-b:a", bitrate.ffmpegArgumentValue,
-                outputURL.path
-            ]
-        )
-    }
-
-    public static func drumsStemCommand(
-        ffmpegPath: String,
-        stems: FourStemURLs,
-        outputURL: URL,
-        bitrate: RenderBitrate = .default
-    ) -> CommandSpec {
-        CommandSpec(
-            executablePath: ffmpegPath,
-            arguments: [
-                "-y",
-                "-i", stems.drums.path,
-                "-c:a", "aac",
-                "-b:a", bitrate.ffmpegArgumentValue,
-                outputURL.path
-            ]
-        )
-    }
-
     private static func sanitizedComponent(_ value: String) -> String {
         value
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
@@ -273,28 +135,6 @@ public enum BoostedDrumsRenderPlan {
         formatter.dateFormat = "yyyyMMdd_HHmmss"
         return formatter.string(from: date)
     }
-
-    private static func dbString(_ value: Double) -> String {
-        String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), value)
-    }
-
-    private static func decimalString(_ value: Double) -> String {
-        String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), value)
-    }
-}
-
-public struct RenderCommandResult: Equatable, Sendable {
-    public let terminationStatus: Int32
-    public let output: String
-
-    public init(terminationStatus: Int32, output: String) {
-        self.terminationStatus = terminationStatus
-        self.output = output
-    }
-}
-
-public protocol RenderCommandExecuting: Sendable {
-    func run(_ command: CommandSpec) async throws -> RenderCommandResult
 }
 
 public typealias RenderProgressHandler = @Sendable (RenderProgressState) async -> Void
@@ -319,175 +159,31 @@ public struct PracticeRenderResult: Equatable, Sendable {
     }
 }
 
-public struct ProcessRenderCommandExecutor: RenderCommandExecuting {
-    public init() {}
-
-    public func run(_ command: CommandSpec) async throws -> RenderCommandResult {
-        let session = RenderCommandProcessSession(command: command)
-        return try await withTaskCancellationHandler {
-            try await session.run()
-        } onCancel: {
-            session.terminate()
-        }
-    }
-}
-
-// Drains one pipe as the child writes so the child can never fill the ~64KB
-// kernel pipe buffer and block before exiting; EOF arrives when the child exits.
-private final class PipeOutputCollector: @unchecked Sendable {
-    let pipe = Pipe()
-    private let lock = NSLock()
-    private var data = Data()
-    private var isFinished = false
-    private var continuation: CheckedContinuation<Void, Never>?
-
-    func begin() {
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            guard let self else { return }
-            let chunk = handle.availableData
-            self.lock.lock()
-            if chunk.isEmpty {
-                self.isFinished = true
-                let continuation = self.continuation
-                self.continuation = nil
-                self.lock.unlock()
-                handle.readabilityHandler = nil
-                continuation?.resume()
-            } else {
-                self.data.append(chunk)
-                self.lock.unlock()
-            }
-        }
-    }
-
-    func cancelCollection() {
-        pipe.fileHandleForReading.readabilityHandler = nil
-        lock.lock()
-        isFinished = true
-        let continuation = self.continuation
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume()
-    }
-
-    // Cancellable: a cancelled run must not stay suspended waiting for EOF
-    // that may never come (e.g. a grandchild process inherited the write end).
-    func waitUntilEOF() async {
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                lock.lock()
-                if isFinished {
-                    lock.unlock()
-                    continuation.resume()
-                } else {
-                    self.continuation = continuation
-                    lock.unlock()
-                }
-            }
-        } onCancel: {
-            cancelCollection()
-        }
-    }
-
-    func text() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(decoding: data, as: UTF8.self)
-    }
-}
-
-private final class RenderCommandProcessSession: @unchecked Sendable {
-    private let command: CommandSpec
-    private let process = Process()
-    private let lock = NSLock()
-    private var didStart = false
-    private var wasCancelled = false
-
-    init(command: CommandSpec) {
-        self.command = command
-    }
-
-    func terminate() {
-        lock.lock()
-        wasCancelled = true
-        let shouldSignal = didStart && process.isRunning
-        lock.unlock()
-        guard shouldSignal else { return }
-        process.terminate()
-        // Escalate for tools that ignore SIGTERM so cancellation cannot hang
-        // on a child that never exits.
-        let process = self.process
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
-        }
-    }
-
-    func run() async throws -> RenderCommandResult {
-        process.executableURL = URL(fileURLWithPath: command.executablePath)
-        process.arguments = command.arguments
-        // Tools like demucs locate ffmpeg via PATH; under launchd that PATH
-        // is minimal, so every tool child gets the app's augmented search path.
-        process.environment = RenderPreflight.subprocessEnvironment(executablePath: command.executablePath)
-
-        let outputCollector = PipeOutputCollector()
-        let errorCollector = PipeOutputCollector()
-        process.standardOutput = outputCollector.pipe
-        process.standardError = errorCollector.pipe
-        outputCollector.begin()
-        errorCollector.begin()
-
-        let status: Int32 = try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { process in
-                continuation.resume(returning: process.terminationStatus)
-            }
-            lock.lock()
-            if wasCancelled {
-                lock.unlock()
-                process.terminationHandler = nil
-                outputCollector.cancelCollection()
-                errorCollector.cancelCollection()
-                continuation.resume(throwing: CancellationError())
-                return
-            }
-            do {
-                try process.run()
-                didStart = true
-                lock.unlock()
-            } catch {
-                lock.unlock()
-                process.terminationHandler = nil
-                outputCollector.cancelCollection()
-                errorCollector.cancelCollection()
-                continuation.resume(throwing: error)
-            }
-        }
-
-        await outputCollector.waitUntilEOF()
-        await errorCollector.waitUntilEOF()
-        try Task.checkCancellation()
-        return RenderCommandResult(
-            terminationStatus: status,
-            output: outputCollector.text() + errorCollector.text()
-        )
-    }
-}
-
 public enum BoostedDrumsRenderError: LocalizedError {
     case missingCommand(String)
     case commandFailed(command: String, status: Int32, output: String)
     case missingStem(URL)
+    /// A stem the native engine returned in-memory carried no audio (empty/silent
+    /// buffers). The buffer-era analogue of `missingStem(URL)` — there is no on-disk
+    /// stem to name, so it identifies the stem by identity (amendment A3).
+    case emptyStem(SeparatedStems.Stem)
     case invalidOutput(URL)
 
     public var errorDescription: String? {
         switch self {
-        case .missingCommand(let command):
-            "Required audio tool is not available: \(command). Install \(command) or set its location in Backbeat Settings, then retry."
-        case .commandFailed(let command, let status, let output):
-            "\(command) failed with exit code \(status). \(output)"
+        case .missingCommand(let component):
+            // There is no external tool to install and the separation model is bundled
+            // with the app, so an unready engine means a broken install — the only
+            // actionable remedy is a reinstall.
+            "Cannot render: \(component) is not ready. Please reinstall Backline Boost and try again."
+        case .commandFailed:
+            // Amendment A2: native separation has no subprocess exit code or output to
+            // embed, so the copy is a plain retryable-failure message.
+            "Drum separation failed for this track. Try rendering it again."
         case .missingStem(let url):
             "Expected audio stem was not created at \(url.path)."
+        case .emptyStem(let stem):
+            "Separation produced no audio for the \(stem.rawValue) stem."
         case .invalidOutput(let url):
             "Rendered file was not created or is empty at \(url.path)."
         }
@@ -496,28 +192,26 @@ public enum BoostedDrumsRenderError: LocalizedError {
 
 public struct BoostedDrumsRenderer {
     public let rendersRootURL: URL
-    public let temporaryRootURL: URL
     public let bitrate: RenderBitrate
-    private let demucsProfile: DemucsSeparationProfile
-    private let commandResolver: RenderPreflight.CommandResolver
-    private let commandRunner: RenderCommandRunner
+    private let separator: any StemSeparating
+    private let stemMixdown: any StemMixing
 
-    // Default arguments are evaluated per construction, so a renderer built
-    // fresh for each job reads the current Settings values at render time.
+    // `separator` is required (no default): the real engine
+    // (`CustomHTDemucsSeparator`) lives in the MLX target the app injects, and
+    // BackbeatCore has no default to offer — a null default would silently compile
+    // a broken render path. The other
+    // defaults are evaluated per construction, so a renderer built fresh for each job
+    // reads the current Settings values (folder + bitrate) at render time.
     public init(
+        separator: any StemSeparating,
         rendersRootURL: URL = RenderSettings.effectiveRendersRootURL(),
-        temporaryRootURL: URL = BackbeatFileLocations.temporaryDirectory,
         bitrate: RenderBitrate = RenderSettings.bitrate(),
-        demucsProfile: DemucsSeparationProfile = .accelerated,
-        commandResolver: @escaping RenderPreflight.CommandResolver = RenderPreflight.resolveCommand(_:),
-        commandExecutor: any RenderCommandExecuting = ProcessRenderCommandExecutor()
+        stemMixdown: any StemMixing = StemMixdown()
     ) {
+        self.separator = separator
         self.rendersRootURL = rendersRootURL
-        self.temporaryRootURL = temporaryRootURL
         self.bitrate = bitrate
-        self.demucsProfile = demucsProfile
-        self.commandResolver = commandResolver
-        self.commandRunner = RenderCommandRunner(executor: commandExecutor)
+        self.stemMixdown = stemMixdown
     }
 
     public func render(
@@ -525,13 +219,6 @@ public struct BoostedDrumsRenderer {
         createdAt: Date = Date(),
         progress: RenderProgressHandler? = nil
     ) async throws -> PracticeRenderResult {
-        guard let demucsPath = commandResolver("demucs") else {
-            throw BoostedDrumsRenderError.missingCommand("demucs")
-        }
-        guard let ffmpegPath = commandResolver("ffmpeg") else {
-            throw BoostedDrumsRenderError.missingCommand("ffmpeg")
-        }
-
         let drumsOutputURL = BoostedDrumsRenderPlan.drumsOutputURL(
             for: track,
             rendersRootURL: rendersRootURL,
@@ -551,45 +238,28 @@ public struct BoostedDrumsRenderer {
             withIntermediateDirectories: true
         )
 
-        let jobDirectory = temporaryRootURL.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let separationRootURL = jobDirectory.appendingPathComponent("separated", isDirectory: true)
-        try FileManager.default.createDirectory(at: separationRootURL, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: jobDirectory)
-        }
-
         await progress?(.separatingStems)
-        try await commandRunner.runDemucsWithFallback(
-            demucsPath: demucsPath,
-            sourceURL: track.sourceURL,
-            separationRootURL: separationRootURL,
-            profile: demucsProfile
-        )
-
-        let stemDirectory = BoostedDrumsRenderPlan.stemDirectory(
-            separationRootURL: separationRootURL,
-            sourceURL: track.sourceURL
-        )
-        let stems = BoostedDrumsRenderPlan.stemURLs(stemDirectory: stemDirectory)
-        try stems.all.forEach(RenderCommandRunner.requireExistingFile(_:))
+        // The native engine separates in-process and returns float stems in memory —
+        // no subprocess, no WAV round-trip (amendment A3). Its per-segment fractional
+        // progress is internal (cancellation checkpoints + logging); the pinned
+        // 5-stage RenderProgressState order is unchanged. Per amendment A1 there is no
+        // MPS→CPU retry — a single in-process GPU attempt; a failure throws here and
+        // surfaces through the queue's existing .renderFailed path, and status-driven
+        // recovery re-enqueues an interrupted track on the next launch.
+        let stems = try await separator.separate(source: track.sourceURL)
+        try Self.requireNonEmptyStems(stems)
 
         await progress?(.mixingDrumsTrack)
-        try await commandRunner.runOrThrow(
-            BoostedDrumsRenderPlan.drumsStemCommand(
-                ffmpegPath: ffmpegPath,
-                stems: stems,
-                outputURL: drumsOutputURL,
-                bitrate: bitrate
-            )
+        try await stemMixdown.writeDrums(
+            stems: stems,
+            outputURL: drumsOutputURL,
+            bitrate: bitrate
         )
         await progress?(.mixingDrumlessTrack)
-        try await commandRunner.runOrThrow(
-            BoostedDrumsRenderPlan.drumlessMixCommand(
-                ffmpegPath: ffmpegPath,
-                stems: stems,
-                outputURL: drumlessOutputURL,
-                bitrate: bitrate
-            )
+        try await stemMixdown.writeDrumless(
+            stems: stems,
+            outputURL: drumlessOutputURL,
+            bitrate: bitrate
         )
         await progress?(.finalizingOutput)
         try RenderCommandRunner.requireNonEmptyFile(drumsOutputURL)
@@ -598,6 +268,16 @@ public struct BoostedDrumsRenderer {
         try removeSupersededRenders(keeping: drumlessOutputURL, for: track, isSuperseded: BoostedDrumsRenderPlan.isDrumlessOutput)
         await progress?(.complete)
         return PracticeRenderResult(drumsURL: drumsOutputURL, drumlessURL: drumlessOutputURL)
+    }
+
+    /// Amendment A3: the buffer-era stem check (the demucs-subprocess era validated
+    /// on-disk stem files instead). A stem the engine returned with no channels, or
+    /// whose channels are all empty, is unusable — fail with `emptyStem` rather than
+    /// letting a silent gap flow into a header-only "successful" output.
+    static func requireNonEmptyStems(_ stems: SeparatedStems) throws {
+        for (stem, channels) in stems.byStem where channels.allSatisfy(\.isEmpty) {
+            throw BoostedDrumsRenderError.emptyStem(stem)
+        }
     }
 
     private func removeSupersededRenders(

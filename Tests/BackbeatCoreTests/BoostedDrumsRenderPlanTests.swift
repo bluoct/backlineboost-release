@@ -2,41 +2,6 @@ import XCTest
 @testable import BackbeatCore
 
 final class BoostedDrumsRenderPlanTests: XCTestCase {
-    func testDemucsCommandUsesAcceleratedMPSProfileByDefault() {
-        let command = BoostedDrumsRenderPlan.demucsCommand(
-            demucsPath: "/opt/homebrew/bin/demucs",
-            sourceURL: URL(fileURLWithPath: "/tmp/source.m4a"),
-            separationRootURL: URL(fileURLWithPath: "/tmp/separated", isDirectory: true)
-        )
-
-        XCTAssertEqual(command.executablePath, "/opt/homebrew/bin/demucs")
-        XCTAssertEqual(command.arguments, [
-            "--name", "htdemucs",
-            "--out", "/tmp/separated",
-            "-d", "mps",
-            "--overlap", "0.1",
-            "/tmp/source.m4a"
-        ])
-    }
-
-    func testDemucsCommandCanUseTunedCPUFallbackProfile() {
-        let command = BoostedDrumsRenderPlan.demucsCommand(
-            demucsPath: "/opt/homebrew/bin/demucs",
-            sourceURL: URL(fileURLWithPath: "/tmp/source.m4a"),
-            separationRootURL: URL(fileURLWithPath: "/tmp/separated", isDirectory: true),
-            profile: .tunedCPU
-        )
-
-        XCTAssertEqual(command.arguments, [
-            "--name", "htdemucs",
-            "--out", "/tmp/separated",
-            "--overlap", "0.1",
-            "/tmp/source.m4a"
-        ])
-        XCTAssertFalse(command.arguments.contains("-d"))
-        XCTAssertFalse(command.arguments.contains("mps"))
-    }
-
     func testRenderOutputURLUsesBoostedDrumsFolderAndSanitizedName() {
         let root = URL(fileURLWithPath: "/tmp/backbeat/renders", isDirectory: true)
         var calendar = Calendar(identifier: .gregorian)
@@ -122,188 +87,34 @@ final class BoostedDrumsRenderPlanTests: XCTestCase {
         XCTAssertTrue(source.contains("renderResult.drumsURL"))
         XCTAssertTrue(source.contains("renderResult.drumlessURL"))
         XCTAssertFalse(source.contains("renderResult.boostedDrumsURL"))
+
+        // The CLI has no app bundle to read the checkpoint from, so it binds the
+        // separator to an explicitly resolved weights path — not the argument-less
+        // CustomHTDemucsSeparator(), whose bundle default resolves to nothing here.
+        XCTAssertTrue(source.contains("CustomHTDemucsSeparator(weightsURL: weightsURL)"))
+        XCTAssertFalse(source.contains("CustomHTDemucsSeparator()"))
     }
 
-    func testMixCommandBoostsDrumsWithoutAmixNormalization() {
-        let stems = FourStemURLs(
-            drums: URL(fileURLWithPath: "/tmp/drums.wav"),
-            bass: URL(fileURLWithPath: "/tmp/bass.wav"),
-            other: URL(fileURLWithPath: "/tmp/other.wav"),
-            vocals: URL(fileURLWithPath: "/tmp/vocals.wav")
-        )
-        let command = BoostedDrumsRenderPlan.mixCommand(
-            ffmpegPath: "/opt/homebrew/bin/ffmpeg",
-            stems: stems,
-            outputURL: URL(fileURLWithPath: "/tmp/output.m4a"),
-            boostDB: 4.5
-        )
-        let gains = DrumBoostMixGains(boostDB: 4.5)
-        let drumGain = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), gains.drumGainDB)
+    func testRendererPassesConfiguredBitrateToStemMixdown() async throws {
+        let fixture = try makeRenderFixture()
+        defer { fixture.cleanUp() }
 
-        XCTAssertEqual(command.executablePath, "/opt/homebrew/bin/ffmpeg")
-        XCTAssertTrue(command.arguments.contains("-filter_complex"))
-        XCTAssertEqual(gains.drumGainDB - gains.backingGainDB, 4.5, accuracy: 0.01)
-        XCTAssertTrue(command.arguments.contains { $0.contains("volume=\(drumGain)dB") })
-        XCTAssertTrue(command.arguments.contains { $0.contains("amix=inputs=4:duration=longest:normalize=0") })
-        XCTAssertFalse(command.arguments.contains { $0.contains("normalize=1") })
-    }
-
-    func testMixCommandAppliesCompensatingBackingTrimAtHigherBoosts() {
-        let stems = FourStemURLs(
-            drums: URL(fileURLWithPath: "/tmp/drums.wav"),
-            bass: URL(fileURLWithPath: "/tmp/bass.wav"),
-            other: URL(fileURLWithPath: "/tmp/other.wav"),
-            vocals: URL(fileURLWithPath: "/tmp/vocals.wav")
-        )
-
-        let command = BoostedDrumsRenderPlan.mixCommand(
-            ffmpegPath: "/opt/homebrew/bin/ffmpeg",
-            stems: stems,
-            outputURL: URL(fileURLWithPath: "/tmp/output.m4a"),
-            boostDB: 9
-        )
-        let gains = DrumBoostMixGains(boostDB: 9)
-        let drumGain = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), gains.drumGainDB)
-        let backingGain = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), gains.backingGainDB)
-
-        XCTAssertEqual(gains.drumGainDB - gains.backingGainDB, 9, accuracy: 0.01)
-        XCTAssertGreaterThan(gains.drumGainDB, 0)
-        XCTAssertLessThan(gains.backingGainDB, 0)
-        XCTAssertTrue(command.arguments.contains { $0.contains("[0:a]volume=\(drumGain)dB[drums]") })
-        XCTAssertTrue(command.arguments.contains { $0.contains("[1:a]volume=\(backingGain)dB[bass]") })
-        XCTAssertTrue(command.arguments.contains { $0.contains("[2:a]volume=\(backingGain)dB[other]") })
-        XCTAssertTrue(command.arguments.contains { $0.contains("[3:a]volume=\(backingGain)dB[vocals]") })
-    }
-
-    func testDrumlessMixCommandOmitsDrumStem() {
-        let stems = FourStemURLs(
-            drums: URL(fileURLWithPath: "/tmp/drums.wav"),
-            bass: URL(fileURLWithPath: "/tmp/bass.wav"),
-            other: URL(fileURLWithPath: "/tmp/other.wav"),
-            vocals: URL(fileURLWithPath: "/tmp/vocals.wav")
-        )
-
-        let command = BoostedDrumsRenderPlan.drumlessMixCommand(
-            ffmpegPath: "/opt/homebrew/bin/ffmpeg",
-            stems: stems,
-            outputURL: URL(fileURLWithPath: "/tmp/output.m4a")
-        )
-
-        XCTAssertEqual(command.executablePath, "/opt/homebrew/bin/ffmpeg")
-        XCTAssertFalse(command.arguments.contains(stems.drums.path))
-        XCTAssertTrue(command.arguments.contains(stems.bass.path))
-        XCTAssertTrue(command.arguments.contains(stems.other.path))
-        XCTAssertTrue(command.arguments.contains(stems.vocals.path))
-        XCTAssertTrue(command.arguments.contains { $0.contains("[0:a][1:a][2:a]amix=inputs=3:duration=longest:normalize=0") })
-        XCTAssertTrue(command.arguments.contains("-c:a"))
-        XCTAssertTrue(command.arguments.contains("aac"))
-        XCTAssertTrue(command.arguments.contains("-b:a"))
-        XCTAssertTrue(command.arguments.contains("256k"))
-    }
-
-    func testDrumsStemCommandUsesOnlyDrumsStem() {
-        let stems = FourStemURLs(
-            drums: URL(fileURLWithPath: "/tmp/drums.wav"),
-            bass: URL(fileURLWithPath: "/tmp/bass.wav"),
-            other: URL(fileURLWithPath: "/tmp/other.wav"),
-            vocals: URL(fileURLWithPath: "/tmp/vocals.wav")
-        )
-
-        let command = BoostedDrumsRenderPlan.drumsStemCommand(
-            ffmpegPath: "/opt/homebrew/bin/ffmpeg",
-            stems: stems,
-            outputURL: URL(fileURLWithPath: "/tmp/output.m4a")
-        )
-
-        XCTAssertEqual(command.executablePath, "/opt/homebrew/bin/ffmpeg")
-        XCTAssertTrue(command.arguments.contains(stems.drums.path))
-        XCTAssertFalse(command.arguments.contains(stems.bass.path))
-        XCTAssertFalse(command.arguments.contains(stems.other.path))
-        XCTAssertFalse(command.arguments.contains(stems.vocals.path))
-        XCTAssertTrue(command.arguments.contains("-c:a"))
-        XCTAssertTrue(command.arguments.contains("aac"))
-        XCTAssertTrue(command.arguments.contains("-b:a"))
-        XCTAssertTrue(command.arguments.contains("256k"))
-    }
-
-    func testCommandsUseConfiguredBitrate() {
-        let stems = FourStemURLs(
-            drums: URL(fileURLWithPath: "/tmp/drums.wav"),
-            bass: URL(fileURLWithPath: "/tmp/bass.wav"),
-            other: URL(fileURLWithPath: "/tmp/other.wav"),
-            vocals: URL(fileURLWithPath: "/tmp/vocals.wav")
-        )
-        let outputURL = URL(fileURLWithPath: "/tmp/output.m4a")
-
-        let mix = BoostedDrumsRenderPlan.mixCommand(
-            ffmpegPath: "/opt/homebrew/bin/ffmpeg",
-            stems: stems,
-            outputURL: outputURL,
-            boostDB: 4,
-            bitrate: .kbps320
-        )
-        let drumless = BoostedDrumsRenderPlan.drumlessMixCommand(
-            ffmpegPath: "/opt/homebrew/bin/ffmpeg",
-            stems: stems,
-            outputURL: outputURL,
-            bitrate: .kbps128
-        )
-        let drums = BoostedDrumsRenderPlan.drumsStemCommand(
-            ffmpegPath: "/opt/homebrew/bin/ffmpeg",
-            stems: stems,
-            outputURL: outputURL,
-            bitrate: .kbps192
-        )
-
-        assertBitrateArgument(mix, equals: "320k")
-        assertBitrateArgument(drumless, equals: "128k")
-        assertBitrateArgument(drums, equals: "192k")
-        XCTAssertFalse(mix.arguments.contains("256k"))
-        XCTAssertFalse(drumless.arguments.contains("256k"))
-        XCTAssertFalse(drums.arguments.contains("256k"))
-    }
-
-    func testRendererPassesBitrateToFfmpegCommands() async throws {
-        let temporaryRootURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let rendersRootURL = temporaryRootURL.appendingPathComponent("renders", isDirectory: true)
-        let sourceURL = temporaryRootURL.appendingPathComponent("sample-song.m4a")
-        try FileManager.default.createDirectory(at: temporaryRootURL, withIntermediateDirectories: true)
-        try Data("source".utf8).write(to: sourceURL)
-        defer {
-            try? FileManager.default.removeItem(at: temporaryRootURL)
-        }
-
-        let commandRecorder = RenderCommandRecorder()
+        let mixRecorder = StemMixdownRecorder()
         let renderer = BoostedDrumsRenderer(
-            rendersRootURL: rendersRootURL,
-            temporaryRootURL: temporaryRootURL.appendingPathComponent("jobs", isDirectory: true),
+            separator: FakeStemSeparator(stems: Self.makeStems(), recorder: nil),
+            rendersRootURL: fixture.rendersRootURL,
             bitrate: .kbps192,
-            commandResolver: { command in "/usr/local/bin/\(command)" },
-            commandExecutor: ProgressRecordingRenderCommandExecutor(recorder: commandRecorder)
-        )
-        let track = BackbeatTrack(
-            title: "Sample Song",
-            duration: 271,
-            status: .imported,
-            sourceURL: sourceURL
+            stemMixdown: RecordingStemMixdown(recorder: mixRecorder)
         )
 
-        _ = try await renderer.render(track: track)
+        _ = try await renderer.render(track: fixture.track)
 
-        let ffmpegCommands = await commandRecorder.commands().filter { $0.executablePath.hasSuffix("ffmpeg") }
-        XCTAssertEqual(ffmpegCommands.count, 2)
-        for command in ffmpegCommands {
-            assertBitrateArgument(command, equals: "192k")
+        let calls = await mixRecorder.calls()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(Set(calls.map(\.kind)), ["drums", "drumless"])
+        for call in calls {
+            XCTAssertEqual(call.bitrate, .kbps192)
         }
-    }
-
-    private func assertBitrateArgument(_ command: CommandSpec, equals expected: String, file: StaticString = #filePath, line: UInt = #line) {
-        guard let flagIndex = command.arguments.firstIndex(of: "-b:a") else {
-            XCTFail("command has no -b:a flag: \(command.arguments)", file: file, line: line)
-            return
-        }
-        XCTAssertEqual(command.arguments[command.arguments.index(after: flagIndex)], expected, file: file, line: line)
     }
 
     func testIdentifiesSupersededOutputsByTrackUUIDOnly() {
@@ -366,10 +177,9 @@ final class BoostedDrumsRenderPlanTests: XCTestCase {
         }
 
         let renderer = BoostedDrumsRenderer(
+            separator: FakeStemSeparator(stems: Self.makeStems(), recorder: nil),
             rendersRootURL: rendersRootURL,
-            temporaryRootURL: temporaryRootURL.appendingPathComponent("jobs", isDirectory: true),
-            commandResolver: { command in "/usr/local/bin/\(command)" },
-            commandExecutor: ProgressRecordingRenderCommandExecutor(recorder: nil)
+            stemMixdown: RecordingStemMixdown(recorder: nil)
         )
         _ = try await renderer.render(track: track)
 
@@ -380,115 +190,132 @@ final class BoostedDrumsRenderPlanTests: XCTestCase {
     }
 
     func testMissingCommandErrorDescriptionIncludesRecoveryHint() {
+        // The native engine has no external tool to install and the model is bundled, so
+        // an unready engine means a broken install — the copy points at a reinstall.
         XCTAssertEqual(
-            BoostedDrumsRenderError.missingCommand("ffmpeg").errorDescription,
-            "Required audio tool is not available: ffmpeg. Install ffmpeg or set its location in Backbeat Settings, then retry."
+            BoostedDrumsRenderError.missingCommand("separation engine").errorDescription,
+            "Cannot render: separation engine is not ready. Please reinstall Backline Boost and try again."
         )
     }
 
     func testRendererReportsProgressStagesInOrder() async throws {
-        let temporaryRootURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let rendersRootURL = temporaryRootURL.appendingPathComponent("renders", isDirectory: true)
-        let sourceURL = temporaryRootURL.appendingPathComponent("sample-song.m4a")
-        try FileManager.default.createDirectory(at: temporaryRootURL, withIntermediateDirectories: true)
-        try Data("source".utf8).write(to: sourceURL)
-        defer {
-            try? FileManager.default.removeItem(at: temporaryRootURL)
-        }
+        let fixture = try makeRenderFixture()
+        defer { fixture.cleanUp() }
 
-        let commandRecorder = RenderCommandRecorder()
+        let stems = Self.makeStems()
+        let separatorRecorder = SeparatorRecorder()
+        let mixRecorder = StemMixdownRecorder()
         let renderer = BoostedDrumsRenderer(
-            rendersRootURL: rendersRootURL,
-            temporaryRootURL: temporaryRootURL.appendingPathComponent("jobs", isDirectory: true),
-            commandResolver: { command in "/usr/local/bin/\(command)" },
-            commandExecutor: ProgressRecordingRenderCommandExecutor(recorder: commandRecorder)
+            separator: FakeStemSeparator(stems: stems, recorder: separatorRecorder),
+            rendersRootURL: fixture.rendersRootURL,
+            stemMixdown: RecordingStemMixdown(recorder: mixRecorder)
         )
         let recorder = RenderProgressRecorder()
-        let track = BackbeatTrack(
-            title: "Sample Song",
-            duration: 271,
-            status: .imported,
-            sourceURL: sourceURL
-        )
 
-        let result = try await renderer.render(track: track) { state in
+        let result = try await renderer.render(track: fixture.track) { state in
             await recorder.record(state)
         }
 
+        // The pinned 5-stage order is unchanged by the native-engine swap: the
+        // subprocess separation became an in-process engine call, but drums are still
+        // mixed before drumless and the stages fire in the same sequence.
         let states = await recorder.states()
         XCTAssertEqual(
             states,
             [.separatingStems, .mixingDrumsTrack, .mixingDrumlessTrack, .finalizingOutput, .complete]
         )
-        XCTAssertEqual(result.drumsURL.deletingLastPathComponent(), rendersRootURL.appendingPathComponent("drums", isDirectory: true))
-        XCTAssertEqual(result.drumlessURL.deletingLastPathComponent(), rendersRootURL.appendingPathComponent("drumless", isDirectory: true))
+        XCTAssertEqual(result.drumsURL.deletingLastPathComponent(), fixture.rendersRootURL.appendingPathComponent("drums", isDirectory: true))
+        XCTAssertEqual(result.drumlessURL.deletingLastPathComponent(), fixture.rendersRootURL.appendingPathComponent("drumless", isDirectory: true))
 
-        let commands = await commandRecorder.commands()
-        XCTAssertEqual(commands.filter { $0.executablePath.hasSuffix("demucs") }.count, 1)
-        let ffmpegCommands = commands.filter { $0.executablePath.hasSuffix("ffmpeg") }
-        XCTAssertEqual(ffmpegCommands.count, 2)
+        // The engine was asked to separate exactly the track's source — once, with no
+        // subprocess and no retry (amendment A1).
+        let separated = await separatorRecorder.sources()
+        XCTAssertEqual(separated, [fixture.track.sourceURL])
 
-        let separationRootURL = try XCTUnwrap(separationRootURL(from: commands))
-        let stems = BoostedDrumsRenderPlan.stemURLs(
-            stemDirectory: BoostedDrumsRenderPlan.stemDirectory(
-                separationRootURL: separationRootURL,
-                sourceURL: sourceURL
-            )
-        )
-        let drumsCommand = ffmpegCommands[0]
-        XCTAssertTrue(drumsCommand.arguments.contains(stems.drums.path))
-        XCTAssertFalse(drumsCommand.arguments.contains(stems.bass.path))
-        XCTAssertFalse(drumsCommand.arguments.contains(stems.other.path))
-        XCTAssertFalse(drumsCommand.arguments.contains(stems.vocals.path))
-        XCTAssertEqual(URL(fileURLWithPath: drumsCommand.arguments.last ?? "").deletingLastPathComponent(), rendersRootURL.appendingPathComponent("drums", isDirectory: true))
-
-        let drumlessCommand = ffmpegCommands[1]
-        XCTAssertFalse(drumlessCommand.arguments.contains(stems.drums.path))
-        XCTAssertTrue(drumlessCommand.arguments.contains(stems.bass.path))
-        XCTAssertTrue(drumlessCommand.arguments.contains(stems.other.path))
-        XCTAssertTrue(drumlessCommand.arguments.contains(stems.vocals.path))
-        XCTAssertEqual(URL(fileURLWithPath: drumlessCommand.arguments.last ?? "").deletingLastPathComponent(), rendersRootURL.appendingPathComponent("drumless", isDirectory: true))
+        // The native mixer received the engine's in-memory stems for both outputs, in
+        // the pinned drums-before-drumless order, into the right variant folders — no
+        // WAV round-trip (amendment A3).
+        let calls = await mixRecorder.calls()
+        XCTAssertEqual(calls.map(\.kind), ["drums", "drumless"])
+        XCTAssertEqual(calls[0].stems, stems)
+        XCTAssertEqual(calls[0].outputURL.deletingLastPathComponent(), fixture.rendersRootURL.appendingPathComponent("drums", isDirectory: true))
+        XCTAssertEqual(calls[1].stems, stems)
+        XCTAssertEqual(calls[1].outputURL.deletingLastPathComponent(), fixture.rendersRootURL.appendingPathComponent("drumless", isDirectory: true))
     }
 
-    func testRendererRetriesDemucsWithTunedCPUProfileWhenMPSFails() async throws {
-        let temporaryRootURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let rendersRootURL = temporaryRootURL.appendingPathComponent("renders", isDirectory: true)
-        let sourceURL = temporaryRootURL.appendingPathComponent("sample-song.m4a")
-        try FileManager.default.createDirectory(at: temporaryRootURL, withIntermediateDirectories: true)
-        try Data("source".utf8).write(to: sourceURL)
-        defer {
-            try? FileManager.default.removeItem(at: temporaryRootURL)
-        }
+    func testRenderPropagatesSeparatorCancellation() async throws {
+        let fixture = try makeRenderFixture()
+        defer { fixture.cleanUp() }
 
-        let executor = MPSFallbackRenderCommandExecutor()
         let renderer = BoostedDrumsRenderer(
-            rendersRootURL: rendersRootURL,
-            temporaryRootURL: temporaryRootURL.appendingPathComponent("jobs", isDirectory: true),
-            commandResolver: { command in "/usr/local/bin/\(command)" },
-            commandExecutor: executor
+            separator: FakeStemSeparator(stems: Self.makeStems(), shouldThrowCancellation: true, recorder: nil),
+            rendersRootURL: fixture.rendersRootURL,
+            stemMixdown: RecordingStemMixdown(recorder: nil)
         )
+
+        // A4: the engine cancels cooperatively between segments and throws
+        // CancellationError; the renderer must let it propagate uncaught so the queue
+        // maps it to `.cancelled` (revert to `.imported`), not `.renderFailed`.
+        await XCTAssertThrowsErrorAsync(try await renderer.render(track: fixture.track)) { error in
+            XCTAssertTrue(error is CancellationError, "expected CancellationError to propagate, got \(error)")
+        }
+    }
+
+    func testRenderThrowsEmptyStemWhenEngineReturnsSilentStem() async throws {
+        let fixture = try makeRenderFixture()
+        defer { fixture.cleanUp() }
+
+        let renderer = BoostedDrumsRenderer(
+            separator: FakeStemSeparator(stems: Self.makeStems(drumsEmpty: true), recorder: nil),
+            rendersRootURL: fixture.rendersRootURL,
+            stemMixdown: RecordingStemMixdown(recorder: nil)
+        )
+
+        // A3: an engine that returns a stem with no audio must fail as emptyStem
+        // rather than silently mixing a header-only "successful" output.
+        await XCTAssertThrowsErrorAsync(try await renderer.render(track: fixture.track)) { error in
+            guard case BoostedDrumsRenderError.emptyStem(.drums) = error else {
+                return XCTFail("expected emptyStem(.drums), got \(error)")
+            }
+        }
+    }
+
+    // MARK: - Fixtures
+
+    private struct RenderFixture {
+        let root: URL
+        let rendersRootURL: URL
+        let track: BackbeatTrack
+
+        func cleanUp() {
+            try? FileManager.default.removeItem(at: root)
+        }
+    }
+
+    private func makeRenderFixture() throws -> RenderFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let rendersRootURL = root.appendingPathComponent("renders", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let track = BackbeatTrack(
             title: "Sample Song",
             duration: 271,
             status: .imported,
-            sourceURL: sourceURL
+            sourceURL: root.appendingPathComponent("sample-song.m4a")
         )
+        return RenderFixture(root: root, rendersRootURL: rendersRootURL, track: track)
+    }
 
-        let result = try await renderer.render(track: track)
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: result.drumsURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: result.drumlessURL.path))
-
-        let demucsCommands = await executor.commands().filter { $0.executablePath.hasSuffix("demucs") }
-        XCTAssertEqual(demucsCommands.count, 2)
-        XCTAssertTrue(demucsCommands[0].arguments.contains("-d"))
-        XCTAssertTrue(demucsCommands[0].arguments.contains("mps"))
-        XCTAssertFalse(demucsCommands[1].arguments.contains("-d"))
-        XCTAssertFalse(demucsCommands[1].arguments.contains("mps"))
-        XCTAssertTrue(demucsCommands[1].arguments.contains("--overlap"))
-        XCTAssertTrue(demucsCommands[1].arguments.contains("0.1"))
+    /// Small in-memory stereo stems, mirroring what a `StemSeparating` engine returns.
+    static func makeStems(sampleRate: Double = 44_100, frames: Int = 128, drumsEmpty: Bool = false) -> SeparatedStems {
+        let channel = [Float](repeating: 0.1, count: frames)
+        let stereo = [channel, channel]
+        return SeparatedStems(
+            sampleRate: sampleRate,
+            drums: drumsEmpty ? [] : stereo,
+            bass: stereo,
+            other: stereo,
+            vocals: stereo
+        )
     }
 }
 
@@ -513,137 +340,81 @@ private actor RenderProgressRecorder {
     }
 }
 
-private actor RenderCommandRecorder {
-    private var recordedCommands: [CommandSpec] = []
+private actor SeparatorRecorder {
+    private var recordedSources: [URL] = []
 
-    func record(_ command: CommandSpec) {
-        recordedCommands.append(command)
+    func record(_ source: URL) {
+        recordedSources.append(source)
     }
 
-    func commands() -> [CommandSpec] {
-        recordedCommands
-    }
-}
-
-private struct ProgressRecordingRenderCommandExecutor: RenderCommandExecuting {
-    var recorder: RenderCommandRecorder?
-
-    func run(_ command: CommandSpec) async throws -> RenderCommandResult {
-        await recorder?.record(command)
-
-        if command.executablePath.hasSuffix("demucs") {
-            try createStemFiles(for: command)
-        } else if command.executablePath.hasSuffix("ffmpeg"), let outputPath = command.arguments.last {
-            try Data("render".utf8).write(to: URL(fileURLWithPath: outputPath))
-        }
-
-        return RenderCommandResult(terminationStatus: 0, output: "")
-    }
-
-    private func createStemFiles(for command: CommandSpec) throws {
-        guard
-            let outIndex = command.arguments.firstIndex(of: "--out"),
-            command.arguments.indices.contains(outIndex + 1),
-            let sourcePath = command.arguments.last
-        else {
-            XCTFail("Unexpected demucs command arguments: \(command.arguments)")
-            return
-        }
-
-        let separationRootURL = URL(fileURLWithPath: command.arguments[outIndex + 1], isDirectory: true)
-        let sourceURL = URL(fileURLWithPath: sourcePath)
-        let stemDirectory = BoostedDrumsRenderPlan.stemDirectory(
-            separationRootURL: separationRootURL,
-            sourceURL: sourceURL
-        )
-        try FileManager.default.createDirectory(at: stemDirectory, withIntermediateDirectories: true)
-
-        for url in BoostedDrumsRenderPlan.stemURLs(stemDirectory: stemDirectory).all {
-            try Data("stem".utf8).write(to: url)
-        }
+    func sources() -> [URL] {
+        recordedSources
     }
 }
 
-private func separationRootURL(from commands: [CommandSpec]) -> URL? {
-    guard
-        let demucsCommand = commands.first(where: { $0.executablePath.hasSuffix("demucs") }),
-        let outIndex = demucsCommand.arguments.firstIndex(of: "--out"),
-        demucsCommand.arguments.indices.contains(outIndex + 1)
-    else {
-        return nil
+private actor StemMixdownRecorder {
+    struct Call: Equatable {
+        let kind: String
+        let stems: SeparatedStems
+        let outputURL: URL
+        let bitrate: RenderBitrate
     }
-    return URL(fileURLWithPath: demucsCommand.arguments[outIndex + 1], isDirectory: true)
+
+    private var recordedCalls: [Call] = []
+
+    func record(_ call: Call) {
+        recordedCalls.append(call)
+    }
+
+    func calls() -> [Call] {
+        recordedCalls
+    }
 }
 
-private actor MPSFallbackRenderCommandExecutor: RenderCommandExecuting {
-    private var recordedCommands: [CommandSpec] = []
+/// Stands in for the native `CustomHTDemucsSeparator`: returns canned in-memory stems (or
+/// throws), and records the source it was asked to separate.
+private struct FakeStemSeparator: StemSeparating {
+    let stems: SeparatedStems
+    var shouldThrowCancellation = false
+    let recorder: SeparatorRecorder?
 
-    func commands() -> [CommandSpec] {
-        recordedCommands
-    }
-
-    func run(_ command: CommandSpec) async throws -> RenderCommandResult {
-        recordedCommands.append(command)
-
-        if command.executablePath.hasSuffix("demucs") {
-            if command.arguments.contains("-d") && command.arguments.contains("mps") {
-                try createPartialOutput(for: command)
-                return RenderCommandResult(terminationStatus: 1, output: "MPS backend unavailable")
-            }
-            if try hasPartialOutput(for: command) {
-                return RenderCommandResult(terminationStatus: 1, output: "Fallback separation root was not cleaned")
-            }
-            try createStemFiles(for: command)
-        } else if command.executablePath.hasSuffix("ffmpeg"), let outputPath = command.arguments.last {
-            try Data("render".utf8).write(to: URL(fileURLWithPath: outputPath))
+    func separate(source: URL, progress: StemSeparationProgress?) async throws -> SeparatedStems {
+        await recorder?.record(source)
+        if shouldThrowCancellation {
+            throw CancellationError()
         }
+        return stems
+    }
+}
 
-        return RenderCommandResult(terminationStatus: 0, output: "")
+/// Stands in for the native `StemMixdown` buffer entry: records the stems the
+/// renderer hands it and drops a non-empty placeholder so the renderer's non-empty
+/// output validation and superseded-file cleanup still exercise.
+private struct RecordingStemMixdown: StemMixing {
+    let recorder: StemMixdownRecorder?
+
+    func writeDrums(stems: SeparatedStems, outputURL: URL, bitrate: RenderBitrate) async throws {
+        await recorder?.record(.init(kind: "drums", stems: stems, outputURL: outputURL, bitrate: bitrate))
+        try Data("render".utf8).write(to: outputURL)
     }
 
-    private func createPartialOutput(for command: CommandSpec) throws {
-        let separationRootURL = try separationRootURL(for: command)
-        try FileManager.default.createDirectory(at: separationRootURL, withIntermediateDirectories: true)
-        try Data("partial".utf8).write(to: separationRootURL.appendingPathComponent("partial.tmp"))
+    func writeDrumless(stems: SeparatedStems, outputURL: URL, bitrate: RenderBitrate) async throws {
+        await recorder?.record(.init(kind: "drumless", stems: stems, outputURL: outputURL, bitrate: bitrate))
+        try Data("render".utf8).write(to: outputURL)
     }
+}
 
-    private func hasPartialOutput(for command: CommandSpec) throws -> Bool {
-        let separationRootURL = try separationRootURL(for: command)
-        return FileManager.default.fileExists(atPath: separationRootURL.appendingPathComponent("partial.tmp").path)
-    }
-
-    private func createStemFiles(for command: CommandSpec) throws {
-        let separationRootURL = try separationRootURL(for: command)
-        guard
-            let sourcePath = command.arguments.last
-        else {
-            XCTFail("Unexpected demucs command arguments: \(command.arguments)")
-            return
-        }
-
-        let sourceURL = URL(fileURLWithPath: sourcePath)
-        let stemDirectory = BoostedDrumsRenderPlan.stemDirectory(
-            separationRootURL: separationRootURL,
-            sourceURL: sourceURL
-        )
-        try FileManager.default.createDirectory(at: stemDirectory, withIntermediateDirectories: true)
-
-        for url in BoostedDrumsRenderPlan.stemURLs(stemDirectory: stemDirectory).all {
-            try Data("stem".utf8).write(to: url)
-        }
-    }
-
-    private func separationRootURL(for command: CommandSpec) throws -> URL {
-        guard
-            let outIndex = command.arguments.firstIndex(of: "--out"),
-            command.arguments.indices.contains(outIndex + 1)
-        else {
-            throw BoostedDrumsRenderError.commandFailed(
-                command: command.executablePath,
-                status: 1,
-                output: "Unexpected demucs command arguments: \(command.arguments)"
-            )
-        }
-        return URL(fileURLWithPath: command.arguments[outIndex + 1], isDirectory: true)
+/// Async variant of XCTAssertThrowsError (the stock macro is synchronous only).
+private func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ handler: (Error) -> Void
+) async {
+    do {
+        _ = try await expression()
+        XCTFail("expected an error to be thrown", file: file, line: line)
+    } catch {
+        handler(error)
     }
 }

@@ -29,6 +29,10 @@ final class BackbeatFileLocationsTests: XCTestCase {
             BackbeatFileLocations.artworkDirectory,
             expectedRoot.appendingPathComponent("artwork", isDirectory: true)
         )
+        XCTAssertEqual(
+            BackbeatFileLocations.modelsDirectory,
+            expectedRoot.appendingPathComponent("Models", isDirectory: true)
+        )
     }
 
     func testTemporaryLocationUsesUserCachesBackbeatFolder() throws {

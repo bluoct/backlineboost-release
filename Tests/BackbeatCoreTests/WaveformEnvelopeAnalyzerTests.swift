@@ -104,13 +104,7 @@ final class WaveformEnvelopeAnalyzerTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw XCTSkip("BACKBEAT_TEST_AUDIO does not point to an existing file.")
         }
-        let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("backbeat-waveform-\(UUID().uuidString)", isDirectory: true)
-        defer {
-            try? FileManager.default.removeItem(at: temporaryRoot)
-        }
-
-        let envelope = try await WaveformEnvelopeAnalyzer(temporaryRootURL: temporaryRoot).analyze(url: url, binCount: 120)
+        let envelope = try await WaveformEnvelopeAnalyzer().analyze(url: url, binCount: 120)
 
         XCTAssertEqual(envelope.bins.count, 120)
         XCTAssertGreaterThan(envelope.duration, 0)

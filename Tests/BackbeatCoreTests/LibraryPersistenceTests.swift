@@ -192,7 +192,8 @@ final class LibraryPersistenceTests: XCTestCase {
             volume: 0.8,
             isPlaylistsSectionCollapsed: true,
             isTracksSectionCollapsed: true,
-            isPlaylistOverflowExpanded: true
+            isPlaylistOverflowExpanded: true,
+            isTracksOverflowExpanded: true
         )
         let persistence = LibraryPersistence(snapshotURL: snapshotURL)
 
@@ -203,6 +204,7 @@ final class LibraryPersistenceTests: XCTestCase {
         XCTAssertTrue(loaded.makeStore().isPlaylistsSectionCollapsed)
         XCTAssertTrue(loaded.makeStore().isTracksSectionCollapsed)
         XCTAssertTrue(loaded.makeStore().isPlaylistOverflowExpanded)
+        XCTAssertTrue(loaded.makeStore().isTracksOverflowExpanded)
     }
 
     func testOlderSnapshotDefaultsSidebarSectionCollapseState() throws {
@@ -222,6 +224,7 @@ final class LibraryPersistenceTests: XCTestCase {
         XCTAssertFalse(loaded.isPlaylistsSectionCollapsed)
         XCTAssertFalse(loaded.isTracksSectionCollapsed)
         XCTAssertFalse(loaded.isPlaylistOverflowExpanded)
+        XCTAssertFalse(loaded.isTracksOverflowExpanded)
     }
 
     func testLoadReturnsNilWhenSnapshotDoesNotExist() throws {

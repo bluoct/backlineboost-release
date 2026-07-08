@@ -5,9 +5,6 @@ import SwiftUI
 struct BackbeatSettingsView: View {
     @Bindable var store: LibraryStore
     let debugLog: DebugLogController
-    @State private var demucsOverride = RenderPreflight.overridePath(for: "demucs") ?? ""
-    @State private var ffmpegOverride = RenderPreflight.overridePath(for: "ffmpeg") ?? ""
-    @State private var toolRefreshToken = 0
     @State private var rendersFolderOverride: URL? = RenderSettings.configuredRendersFolder()
     @State private var renderBitrate: RenderBitrate = RenderSettings.bitrate()
 
@@ -22,14 +19,6 @@ struct BackbeatSettingsView: View {
                     )
                 )
                 Text("Boosts quieter songs and lightly reins in very loud songs during playback.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Audio tools") {
-                toolRow(command: "demucs", override: $demucsOverride)
-                toolRow(command: "ffmpeg", override: $ffmpegOverride)
-                Text("Leave blank to find tools automatically. Set a full path to a tool to override the automatic lookup.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -126,33 +115,5 @@ struct BackbeatSettingsView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         RenderSettings.setConfiguredRendersFolder(url)
         rendersFolderOverride = url
-    }
-
-    private func toolRow(command: String, override binding: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TextField("\(command) path", text: binding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-                .onSubmit { commitOverride(binding.wrappedValue, for: command) }
-                .onChange(of: binding.wrappedValue) { _, newValue in
-                    commitOverride(newValue, for: command)
-                }
-            Text(resolutionStatus(for: command))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .id(toolRefreshToken)
-        }
-    }
-
-    private func commitOverride(_ path: String, for command: String) {
-        RenderPreflight.setOverridePath(path, for: command)
-        toolRefreshToken += 1
-    }
-
-    private func resolutionStatus(for command: String) -> String {
-        if let resolved = RenderPreflight.resolveCommand(command) {
-            return "Using: \(resolved)"
-        }
-        return "Not found — install \(command) or set its full path above."
     }
 }

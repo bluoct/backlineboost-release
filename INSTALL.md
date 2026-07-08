@@ -1,18 +1,17 @@
 # Installing Backline Boost
 
-Last updated: 2026-07-03
+Last updated: 2026-07-07
 
-Backline Boost is currently a local macOS prototype built from source. There is not yet a signed, notarized installer package.
+Backline Boost is currently a local macOS app built from source. There is not yet a signed, notarized installer package.
 
 ## Requirements
 
 - macOS 14 or newer.
 - Xcode or Apple Command Line Tools with a Swift 6 toolchain.
 - Local audio files to import. Backline Boost does not import or stream protected Apple Music, Spotify, or other subscription-library tracks.
-- `ffmpeg` for analysis, waveform, loudness, and render support.
-- `demucs` for drum/source separation.
+- Network access on the **first** build only, to fetch the drum-separation model checkpoint (~84 MB). It is verified against a pinned SHA-256, cached per machine, and bundled into the app — the app itself never accesses the network.
 
-Backline Boost can still launch and play imported songs in `Original` mode without Demucs, but `Drum Boost` and `Drumless` (stem separation) require the helper tools.
+No external command-line tools are required. Separation, analysis, and rendering run entirely on-device via the native MLX engine; the earlier `demucs`/`ffmpeg` toolchain is gone.
 
 ## Get The Source
 
@@ -46,29 +45,14 @@ swift --version
 
 Backline Boost's package declares `swift-tools-version: 6.0`, so use an Xcode/Swift toolchain that supports Swift 6.
 
-## Install FFmpeg
+## The Bundled Model
 
-The easiest macOS path is Homebrew:
+Backline Boost bundles Meta's htdemucs model checkpoint inside the app — you do not download or install it separately. The build handles it:
 
-```sh
-brew install ffmpeg
-ffmpeg -version
-```
+- On the first build, `script/build_and_run.sh` fetches the checkpoint, verifies it against a pinned SHA-256 (the build fails on mismatch), caches it under `~/Library/Caches/backline-boost/weights/`, and copies it into the app bundle before signing.
+- Later builds reuse the cached, verified copy and need no network.
 
-Backline Boost looks for `ffmpeg` in common Homebrew/MacPorts locations, the app process `PATH`, and the project-local `.venv/bin`.
-
-## Install Demucs
-
-The most predictable setup for Backline Boost is a repo-local Python virtual environment. Backline Boost checks `.venv/bin` automatically when launched from the GUI.
-
-```sh
-python3 -m venv .venv
-./.venv/bin/python -m pip install --upgrade pip setuptools wheel
-./.venv/bin/python -m pip install demucs
-./.venv/bin/demucs --help
-```
-
-If the install fails because of your Python version, create the virtual environment with a supported Python 3 version from Homebrew or pyenv, then repeat the `pip install demucs` step.
+See [WEIGHTS.md](WEIGHTS.md) for the checkpoint's provenance and integrity details.
 
 ## Build And Launch
 
@@ -120,35 +104,18 @@ Verify the app bundle launches:
 1. Launch Backline Boost.
 2. Click `Import Track` or `Import Folder` (or drag files in).
 3. Import a local AAC, AIFF/AIF, FLAC, M4A, MP3, or WAV file.
-4. Wait for the track's status to reach `Ready` — Backline Boost separates it into stems automatically in the background.
+4. Wait for the track's status to reach `Ready` — Backline Boost separates it into stems automatically in the background. The first render after installing prepares the on-device model, which can add a few seconds.
 5. Open the track in the Player and choose `Drum Boost` (or `Drumless`).
 6. Set the drum level with the `Drums` slider and practice with speed control and A/B loops.
 
 ## Troubleshooting
 
-### Demucs Not Available
+### Build Fails Fetching The Model
 
-Backline Boost could not find the `demucs` command.
+The first build downloads the model checkpoint from Meta's servers. If it fails:
 
-Check:
-
-```sh
-./.venv/bin/demucs --help
-```
-
-If that works, relaunch Backline Boost with `Launch Backline Boost.command` so the app can resolve the repo-local virtual environment.
-
-### FFmpeg Not Available
-
-Backline Boost could not find `ffmpeg`.
-
-Check:
-
-```sh
-ffmpeg -version
-```
-
-If Homebrew installed FFmpeg but the app still cannot find it, relaunch through `Launch Backline Boost.command`; the app also checks common Homebrew paths such as `/opt/homebrew/bin`.
+- Check your network connection and re-run `./script/build_and_run.sh`.
+- A `SHA-256 mismatch` message means the downloaded bytes didn't match the pin, so the build refuses to bundle them. Re-run to retry; a persistently wrong checksum means the upstream artifact or the pinned value changed (see [WEIGHTS.md](WEIGHTS.md)).
 
 ### Build Fails With Missing Swift Toolchain
 
@@ -161,14 +128,7 @@ swift --version
 
 ### App Launches But Render Fails
 
-Original playback is separate from stem processing. If `Original` works but stem separation (Drum Boost/Drumless) fails, verify both helper tools:
-
-```sh
-ffmpeg -version
-./.venv/bin/demucs --help
-```
-
-Then retry the failed render in Backline Boost.
+Original playback is separate from stem processing. If `Original` works but stem separation (Drum Boost/Drumless) fails, use `Retry render` on the track. The separation model is bundled, so a persistent failure usually means a corrupt build — rebuild with `./script/build_and_run.sh`.
 
 ## Uninstall Local Build Artifacts
 
@@ -184,4 +144,4 @@ Backline Boost's managed user library lives under:
 ~/Library/Application Support/Backbeat/
 ```
 
-Do not delete that folder unless you intentionally want to remove imported source copies, artwork, playlists, and render outputs managed by Backline Boost.
+Do not delete that folder unless you intentionally want to remove imported source copies, artwork, playlists, and render outputs managed by Backline Boost. The machine-local model cache the build uses lives separately under `~/Library/Caches/backline-boost/`.

@@ -1,6 +1,6 @@
 # Legal Notices
 
-Last updated: 2026-07-05
+Last updated: 2026-07-07
 
 Contact: justin@bluoct.com
 
@@ -14,50 +14,48 @@ If Backline Boost is distributed as source or as an app binary, include the GPLv
 
 ## Repository Dependency Status
 
-At this checkpoint, `Package.swift` declares only local Swift targets:
+Backline Boost separates drums and renders audio entirely on-device. It no longer invokes any external command-line tool (the demucs and ffmpeg subprocesses were removed when the native MLX engine landed).
+
+`Package.swift` declares one third-party Swift Package Manager dependency:
+
+- `mlx-swift` — <https://github.com/ml-explore/mlx-swift>, pinned to exactly `0.30.6`. Licensed under the MIT License. It transitively resolves `swift-numerics` (<https://github.com/apple/swift-numerics>, `1.1.1`, Apache License 2.0 with the Swift runtime-library exception).
+
+The package's local Swift targets are:
 
 - `BackbeatCore`
+- `BackbeatSeparationMLX`
 - `Backbeat`
 - `BackbeatWorkflowSmoke`
+- `BackbeatSepBench`
 - `BackbeatCoreTests`
 
-There are no third-party Swift Package Manager dependencies vendored or linked by the package.
+Backline Boost also uses Apple platform APIs such as SwiftUI, AppKit, AVFoundation, Accelerate, and MLX as system/first-party SDKs. Those are supplied by Apple and are not redistributed in this repository.
 
-Backline Boost uses Apple platform APIs such as SwiftUI, AppKit, AVFoundation, and Accelerate as system SDKs. Those are supplied by Apple and are not redistributed in this repository.
+## Third-Party Components
 
-## External Helper Tools
+### MLX Swift
 
-The current prototype invokes external command-line tools when they are installed on the user's machine. These tools are not bundled in the repository or the locally built app bundle at this checkpoint.
+Backline Boost runs its on-device drum separation on Apple's MLX Swift array/neural-network framework.
 
-### FFmpeg
+MLX Swift is licensed under the MIT License. Copyright (c) 2023 Apple Inc.
 
-Backline Boost uses the `ffmpeg` command for audio analysis, waveform/loudness support, and render-related audio processing.
+Project link: <https://github.com/ml-explore/mlx-swift>
 
-FFmpeg states that it is licensed under LGPL version 2.1 or later by default, with optional GPL-covered parts that can make a given FFmpeg build GPL-covered. FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
+The separation engine itself is first-party Backline Boost code; MLX Swift enters only as a linked, exactly-pinned package dependency. The MIT License is compatible with Backline Boost's GPLv3 license; the combined work is distributed under GPLv3, and retaining the MIT notice satisfies the attribution requirement with no relicensing or added obligation.
 
-Project link: <https://ffmpeg.org/>
+## Drum-Separation Model Weights
 
-Legal information: <https://ffmpeg.org/legal.html>
+Backline Boost bundles Meta's published htdemucs (Hybrid Transformer Demucs) model weights inside the distributed app and converts them to the engine's layout on-device. The source repository does not contain the weights: the build script fetches Meta's own artifact, verifies it against a pinned SHA-256, and copies it into the app bundle before signing — so the shipped checkpoint is byte-identical to Meta's published artifact and unmodified. `WEIGHTS.md` records the exact provenance (source URL, checkpoint version, license, SHA-256, size).
 
-If a future Backline Boost distribution bundles FFmpeg or FFmpeg libraries, update this file with the exact FFmpeg build, license mode, source-offer location, configure flags, and required notices.
-
-### Demucs
-
-Backline Boost uses the `demucs` command for source separation.
-
-Demucs is licensed under the MIT License.
-
-Copyright notice from the Demucs license:
+The weights originate from the Demucs project and are licensed under the MIT License.
 
 ```text
 Copyright (c) Meta Platforms, Inc. and affiliates.
 ```
 
+The htdemucs weights are published for research purposes. The MIT License permits redistribution provided the copyright notice and license text are retained; this project retains them (here and in `WEIGHTS.md`) and redistributes the checkpoint unmodified. Users remain responsible for confirming their own rights to use the model for their purposes.
+
 Project link: <https://github.com/facebookresearch/demucs>
-
-License link: <https://github.com/facebookresearch/demucs/blob/main/LICENSE>
-
-If a future Backline Boost distribution bundles Demucs, Python, PyTorch, torchaudio, or other transitive packages, update this file with the complete third-party license inventory and include required notices.
 
 ## App Icon And Project Assets
 
@@ -84,8 +82,7 @@ Before distributing Backline Boost beyond local development:
 - Include `LICENSE`.
 - Include this `LEGAL.md`.
 - Provide corresponding Backline Boost source code for the distributed build.
-- Confirm whether FFmpeg, Demucs, Python, PyTorch, or related dependencies are bundled or merely invoked from the user's environment.
-- If any helper tools are bundled, include their exact license texts, copyright notices, source locations, and build details.
-- Confirm the FFmpeg build license mode, especially whether it was built with GPL or nonfree components.
+- Include the MIT license text and copyright notice for `mlx-swift`.
+- Include `WEIGHTS.md` and retain Meta's MIT copyright + license notice for the bundled htdemucs checkpoint. The checkpoint is redistributed unmodified and byte-identical to Meta's published artifact (build-verified against a pinned SHA-256); the source repository itself contains no weights.
 - Do not bundle sample songs, album art, or user-imported media unless rights are cleared.
 - Add an in-app About/Legal surface if the app is packaged for non-developer users.

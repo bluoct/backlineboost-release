@@ -35,14 +35,23 @@ final class BackbeatSettingsSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("Applies to new renders"))
     }
 
-    func testSettingsViewExposesAudioToolPathOverrides() throws {
+    // The bundled-weights cut-over removed the Settings "Separation model" section: the
+    // checkpoint ships in the app, so there is no first-run download UI to expose.
+    func testSettingsViewHasNoSeparationModelSection() throws {
         let source = try readSource("Sources/Backbeat/Views/BackbeatSettingsView.swift")
 
-        XCTAssertTrue(source.contains("Audio tools"))
-        XCTAssertTrue(source.contains("RenderPreflight.setOverridePath"))
-        XCTAssertTrue(source.contains("RenderPreflight.resolveCommand"))
-        XCTAssertTrue(source.contains("toolRow(command: \"demucs\""))
-        XCTAssertTrue(source.contains("toolRow(command: \"ffmpeg\""))
+        XCTAssertFalse(source.contains("Section(\"Separation model\")"))
+        XCTAssertFalse(source.contains("ModelWeightsStatusView"))
+    }
+
+    // Task 9 removed the subprocess apparatus: no external audio tools, so the
+    // "Audio tools" override section and its RenderPreflight plumbing are gone.
+    func testSettingsViewHasNoAudioToolOverrideSection() throws {
+        let source = try readSource("Sources/Backbeat/Views/BackbeatSettingsView.swift")
+
+        XCTAssertFalse(source.contains("Audio tools"))
+        XCTAssertFalse(source.contains("RenderPreflight"))
+        XCTAssertFalse(source.contains("toolRow"))
     }
 
     private func readSource(_ relativePath: String) throws -> String {

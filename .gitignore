@@ -36,3 +36,6 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Private planning / scratch docs (untracked, never committed)
+private/

@@ -1,8 +1,8 @@
 import Foundation
 import Observation
 
-/// Serialized background render queue: imports enqueue here, one Demucs job
-/// runs at a time, and the rest wait FIFO. Queue membership and progress are
+/// Serialized background render queue: imports enqueue here, one in-process
+/// separation+mix job runs at a time, and the rest wait FIFO. Queue membership and progress are
 /// runtime-only state — persistence re-derives the queue on launch from track
 /// status via `enqueueMissingRenders()`.
 @MainActor @Observable
@@ -22,9 +22,13 @@ public final class RenderQueueCoordinator {
     public init(
         store: LibraryStore,
         renderExecution: @escaping RenderExecution = { track, onProgress in
-            // Constructed per job so every render reads the current
-            // RenderSettings (folder + bitrate) at render time.
-            try await BoostedDrumsRenderer().render(track: track, progress: onProgress)
+            // Constructed per job so every render reads the current RenderSettings
+            // (folder + bitrate) at render time. The Core default names the null
+            // engine explicitly — the app overrides this closure to inject the real
+            // CustomHTDemucsSeparator (BackbeatCore has no MLX dependency); this
+            // default is used only by previews/fallbacks and fails loudly if run.
+            try await BoostedDrumsRenderer(separator: UnavailableStemSeparator())
+                .render(track: track, progress: onProgress)
         }
     ) {
         self.store = store
@@ -45,9 +49,9 @@ public final class RenderQueueCoordinator {
         }
     }
 
-    /// applicationWillTerminate hook: cancellation SIGTERMs the in-flight
-    /// demucs subprocess synchronously; the track's stale `.rendering` status
-    /// re-enqueues it on the next launch.
+    /// applicationWillTerminate hook: cooperatively cancels the in-flight
+    /// in-process render Task (amendment A4 — no subprocess to SIGTERM); the
+    /// track's stale `.rendering` status re-enqueues it on the next launch.
     public func cancelActiveForShutdown() {
         activeRenderTask?.cancel()
     }

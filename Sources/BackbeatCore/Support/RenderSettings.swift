@@ -10,7 +10,8 @@ public enum RenderBitrate: Int, CaseIterable, Codable, Sendable, Identifiable {
 
     public var id: Int { rawValue }
 
-    public var ffmpegArgumentValue: String { "\(rawValue)k" }
+    /// Bits per second for the native AAC encoder (`AVEncoderBitRateKey`).
+    public var encoderBitRate: Int { rawValue * 1_000 }
 
     public var displayLabel: String { "\(rawValue) kbps" }
 }

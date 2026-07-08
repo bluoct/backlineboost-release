@@ -34,8 +34,23 @@ final class BackbeatHelpSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("README"))
         XCTAssertTrue(source.contains("Install"))
         XCTAssertTrue(source.contains("Legal Notices"))
-        XCTAssertTrue(source.contains("FFmpeg"))
-        XCTAssertTrue(source.contains("Demucs"))
+        XCTAssertTrue(source.contains("GNU General Public License version 3"))
+    }
+
+    func testHelpFileDocumentsNativeEngineNoticesAndDropsToolInvocations() throws {
+        let source = try readSource("Sources/Backbeat/Resources/Help/index.html")
+
+        // Phase 5 cut-over: the engine is first-party code, so the vendored
+        // demucs-mlx-swift credit is gone; the MLX Swift (linked dependency) and
+        // research-only htdemucs weights notes remain; the demucs/ffmpeg
+        // runtime-invocation notices stay gone.
+        XCTAssertTrue(source.contains("MLX Swift"))
+        XCTAssertFalse(source.contains("demucs-mlx-swift"))
+        XCTAssertTrue(source.contains("htdemucs"))
+        XCTAssertTrue(source.contains("research purposes"))
+        XCTAssertFalse(source.contains("invokes <code>ffmpeg</code>"))
+        XCTAssertFalse(source.contains("invokes <code>demucs</code>"))
+        XCTAssertFalse(source.contains(".venv/bin"))
     }
 
     func testBuildScriptCopiesHelpResourcesIntoAppBundle() throws {

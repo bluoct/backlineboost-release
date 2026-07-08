@@ -6,22 +6,13 @@ public protocol WaveformEnvelopeAnalyzing: Sendable {
 
 public struct WaveformEnvelopeAnalyzer: WaveformEnvelopeAnalyzing {
     private let analysisSampleRate: Double
-    private let decoder: MonoPCMDecoder
+    private let decoder: AudioPCMDecoder
 
     public init(
-        analysisSampleRate: Double = 22_050,
-        temporaryRootURL: URL = BackbeatFileLocations.temporaryDirectory
-            .appendingPathComponent("waveforms", isDirectory: true),
-        commandResolver: @escaping RenderPreflight.CommandResolver = RenderPreflight.resolveCommand(_:),
-        commandExecutor: any RenderCommandExecuting = ProcessRenderCommandExecutor()
+        analysisSampleRate: Double = 22_050
     ) {
         self.analysisSampleRate = analysisSampleRate
-        self.decoder = MonoPCMDecoder(
-            sampleRate: analysisSampleRate,
-            temporaryRootURL: temporaryRootURL,
-            commandResolver: commandResolver,
-            commandExecutor: commandExecutor
-        )
+        self.decoder = AudioPCMDecoder(sampleRate: analysisSampleRate)
     }
 
     public func analyze(url: URL, binCount: Int = 240) async throws -> WaveformEnvelope {

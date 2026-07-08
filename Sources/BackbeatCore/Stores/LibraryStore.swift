@@ -31,6 +31,7 @@ public final class LibraryStore {
     public var isPlaylistsSectionCollapsed: Bool
     public var isTracksSectionCollapsed: Bool
     public var isPlaylistOverflowExpanded: Bool
+    public var isTracksOverflowExpanded: Bool
 
     public init(
         tracks: [BackbeatTrack] = [],
@@ -51,7 +52,8 @@ public final class LibraryStore {
         renderFailureMessage: String? = nil,
         isPlaylistsSectionCollapsed: Bool = false,
         isTracksSectionCollapsed: Bool = false,
-        isPlaylistOverflowExpanded: Bool = false
+        isPlaylistOverflowExpanded: Bool = false,
+        isTracksOverflowExpanded: Bool = false
     ) {
         self.tracks = tracks
         self.selectedTrackID = selectedTrackID
@@ -78,6 +80,7 @@ public final class LibraryStore {
         self.isPlaylistsSectionCollapsed = isPlaylistsSectionCollapsed
         self.isTracksSectionCollapsed = isTracksSectionCollapsed
         self.isPlaylistOverflowExpanded = isPlaylistOverflowExpanded
+        self.isTracksOverflowExpanded = isTracksOverflowExpanded
     }
 
     public var selectedTrack: BackbeatTrack? {

@@ -1,5 +1,6 @@
 import AppKit
 import BackbeatCore
+import BackbeatSeparationMLX
 import SwiftUI
 
 final class BackbeatAppDelegate: NSObject, NSApplicationDelegate {
@@ -35,7 +36,17 @@ struct BackbeatApp: App {
         self.libraryWriter = LibrarySnapshotWriter(persistence: persistence)
         let store = persistence.loadStoreOrDefault()
         _store = State(initialValue: store)
-        self.renderQueue = RenderQueueCoordinator(store: store)
+
+        // One shared native engine for the whole session: the actor keeps its
+        // converted-model graph across jobs (the serial FIFO queue means jobs never
+        // overlap), and BoostedDrumsRenderer is rebuilt per job only to re-read the
+        // current RenderSettings. Injecting it here is the single point where the app
+        // (which depends on the MLX target) hands the engine to BackbeatCore.
+        let separator = CustomHTDemucsSeparator()
+        self.renderQueue = RenderQueueCoordinator(store: store) { track, onProgress in
+            try await BoostedDrumsRenderer(separator: separator)
+                .render(track: track, progress: onProgress)
+        }
     }
 
     var body: some Scene {
@@ -50,8 +61,9 @@ struct BackbeatApp: App {
                     let debugLog = debugLog
                     debugLog.startIfEnabled()
                     appDelegate.persistLibraryOnTerminate = {
-                        // Cancel first: demucs children are not auto-killed on
-                        // quit, and the reverted status is what gets flushed.
+                        // Cancel first: the in-flight in-process render Task is
+                        // cancelled cooperatively on quit, and the reverted status
+                        // is what gets flushed.
                         renderQueue.cancelActiveForShutdown()
                         let generation = libraryWriter.nextGeneration()
                         try? libraryWriter.write(LibrarySnapshot(store: store), generation: generation)

@@ -3,8 +3,7 @@ import Foundation
 public enum BackbeatFileLocations {
     /// Dev-machine only: #filePath is baked in at compile time, so this
     /// resolves to a nonexistent path in distributed builds. Consumers must
-    /// treat it as best-effort (RenderPreflight's .venv probe and the legacy
-    /// in-repo migration paths both fail soft).
+    /// treat it as best-effort (the legacy in-repo migration paths fail soft).
     public static var projectRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -53,6 +52,14 @@ public enum BackbeatFileLocations {
 
     public static var artworkDirectory: URL {
         applicationSupportDirectory.appendingPathComponent("artwork", isDirectory: true)
+    }
+
+    /// The converted MLX model cache lives here (`mlx-htdemucs-v*/`), produced in-process
+    /// from the htdemucs checkpoint that ships in the app bundle. This directory is
+    /// writable — the read-only bundled `.th` is never written beside — and the cache is
+    /// regenerated on a miss (e.g. a schema bump).
+    public static var modelsDirectory: URL {
+        applicationSupportDirectory.appendingPathComponent("Models", isDirectory: true)
     }
 
     public static var legacyRenderRootDirectory: URL {

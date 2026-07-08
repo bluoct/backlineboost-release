@@ -35,11 +35,13 @@ final class RenderSettingsTests: XCTestCase {
         XCTAssertEqual(RenderSettings.bitrate(defaults: defaults), .default)
     }
 
-    func testBitrateFfmpegArgumentValues() {
-        XCTAssertEqual(RenderBitrate.kbps128.ffmpegArgumentValue, "128k")
-        XCTAssertEqual(RenderBitrate.kbps192.ffmpegArgumentValue, "192k")
-        XCTAssertEqual(RenderBitrate.kbps256.ffmpegArgumentValue, "256k")
-        XCTAssertEqual(RenderBitrate.kbps320.ffmpegArgumentValue, "320k")
+    func testBitrateEncoderBitRateValues() {
+        // The native AAC encoder takes bits per second (AVEncoderBitRateKey),
+        // replacing ffmpeg's "<n>k" argument now that the ffmpeg builders are gone.
+        XCTAssertEqual(RenderBitrate.kbps128.encoderBitRate, 128_000)
+        XCTAssertEqual(RenderBitrate.kbps192.encoderBitRate, 192_000)
+        XCTAssertEqual(RenderBitrate.kbps256.encoderBitRate, 256_000)
+        XCTAssertEqual(RenderBitrate.kbps320.encoderBitRate, 320_000)
     }
 
     func testConfiguredRendersFolderRoundTripAndReset() {

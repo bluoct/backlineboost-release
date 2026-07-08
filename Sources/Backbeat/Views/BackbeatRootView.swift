@@ -157,8 +157,15 @@ struct BackbeatRootView: View {
             }
         }
         .task {
-            renderQueue.enqueueMissingRenders()
+            // Loudness analysis is independent of the separation model; start it up front.
+            // The htdemucs checkpoint ships in the app bundle, so rendering is always
+            // available — enqueue any missing renders unconditionally. One-time: purge the
+            // orphaned `.th` older builds downloaded into Application Support and the
+            // vendored port's stale v1/v2 conversion caches (fail-soft, off the main
+            // actor); the custom engine's live v3 cache is kept.
             analyzeMissingLoudnessProfiles()
+            Task.detached(priority: .utility) { LegacyWeightsCleanup.purgeLegacyArtifacts() }
+            renderQueue.enqueueMissingRenders()
         }
     }
 
@@ -353,6 +360,7 @@ struct BackbeatRootView: View {
                 sourceURL: managedURL,
                 artworkURL: artworkURL
             )
+            // The separation model is bundled, so a render can start immediately.
             renderQueue.enqueue(track.id)
             analyzeMissingLoudnessProfiles()
             DebugLog.importing.notice("import.done trackID=\(trackID.uuidString, privacy: .public) title=\(track.title, privacy: .public) hasArtwork=\(artworkURL != nil)")
@@ -387,8 +395,8 @@ struct BackbeatRootView: View {
     }
 
     private func deleteTrack(_ track: BackbeatTrack) throws {
-        // Cancel first so an in-flight demucs job dies and its completion
-        // handler sees the track gone.
+        // Cancel first so an in-flight render job is cancelled and its
+        // completion handler sees the track gone.
         renderQueue.cancel(track.id)
         if store.nowPlayingTrackID == track.id {
             playback.stopRender(track: track, store: store)

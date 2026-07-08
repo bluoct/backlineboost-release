@@ -1,6 +1,6 @@
 # Backline Boost User Manual
 
-Last updated: 2026-07-05
+Last updated: 2026-07-07
 
 Backline Boost is a local macOS practice player for drummers. It imports your own audio files, separates them into drum and backing stems, and lets you practice with three main playback modes:
 
@@ -12,15 +12,12 @@ Backline Boost stores each song locally. It does not stream from Apple Music, Sp
 
 ## Requirements
 
-Backline Boost can play imported files immediately in `Original` mode. To create `Drum Boost` and `Drumless`, it also needs the external audio tools used by the separation engine.
+Backline Boost plays imported files immediately in `Original` mode and creates `Drum Boost` and `Drumless` **entirely on-device** — no external tools are required.
 
 - Supported import formats: AAC, AIFF/AIF, FLAC, M4A, MP3, and WAV.
-- Required for stem separation: `demucs`.
-- Required for audio conversion/render support: `ffmpeg`.
+- Separation, analysis, and rendering run natively (Apple's MLX). The drum-separation model ships inside the app; nothing is downloaded and no audio leaves your machine.
 
-When Backline Boost is launched from the Finder, it looks for these tools in the project-local `.venv/bin`, the app process `PATH`, and common Homebrew/MacPorts locations. You can also set explicit paths in `Settings ▸ Audio tools`.
-
-For full setup instructions, see [INSTALL.md](../INSTALL.md). For licensing and attribution notes, see [LEGAL.md](../LEGAL.md).
+For full setup instructions, see [INSTALL.md](../INSTALL.md). For licensing and attribution notes, see [LEGAL.md](../LEGAL.md) and [WEIGHTS.md](../WEIGHTS.md).
 
 ## Launching Backline Boost
 
@@ -78,7 +75,7 @@ Backline Boost separates every imported song into drum and backing stems for you
 - Separation runs **one track at a time**. A track that is waiting shows `Waiting to render (#N)`; the one in progress shows its current stage.
 - The stages are: `Separating stems` → `Creating drums track` → `Creating drumless track` → `Finalizing render`. When it finishes, the track's status becomes `Ready`, and `Drum Boost` and `Drumless` become available for it.
 - Each separation produces one durable `Drums` file and one durable `Drumless` file. `Drum Boost` mixes those two live during playback (see the Player) — it is not a separate mixed-down file. Backline Boost keeps only the newest Drums/Drumless pair for each track.
-- If separation fails (usually a missing or misconfigured tool), the status shows `Render failed` with a `Retry render` action. Fix the issue — see Troubleshooting and `Settings ▸ Audio tools` — then retry.
+- If separation fails, the status shows `Render failed` with a `Retry render` action — see Troubleshooting, then retry.
 - Separations keep running in the background while you use the app, and resume automatically after you quit and relaunch.
 
 You can change where the rendered files are saved and their audio quality in `Settings ▸ Rendering`.
@@ -199,15 +196,11 @@ Drum boost values are stored per song, not per playlist. A song uses the same sa
 
 ## Settings
 
-Open **Backline Boost ▸ Settings** (`⌘,`). The window has four sections.
+Open **Backline Boost ▸ Settings** (`⌘,`). The window has three sections.
 
 ### Playback
 
 - **Normalize playback volume** — a loudness assist that evens out big volume jumps between songs. It boosts quieter songs more than it reins in loud ones, so older or quieter recordings sit closer to modern masters. It applies during playback across `Original`, `Drum Boost`, and `Drumless`, and does not replace the per-song drum boost.
-
-### Audio tools
-
-Editable path fields for `demucs` and `ffmpeg`. Leave a field blank to let Backline Boost find the tool automatically; set a full path to override the lookup. Each field shows its live status — `Using: <path>` when the tool is found, or `Not found — install <tool> or set its full path above.`
 
 ### Rendering
 
@@ -237,17 +230,9 @@ Backline Boost migrates older project-root library snapshots into Application Su
 
 ## Troubleshooting
 
-### "demucs not available"
-
-`Original` playback still works, but stem separation needs `demucs`. Install or expose Demucs so the GUI-launched app can find it — Backline Boost checks the project `.venv/bin`, the app `PATH`, and common Homebrew/MacPorts paths — or set its full path in `Settings ▸ Audio tools`.
-
-### "ffmpeg not available"
-
-Install or expose `ffmpeg`, or set its full path in `Settings ▸ Audio tools`. Backline Boost uses it for audio conversion/render support.
-
 ### Render Failed
 
-Use the `Retry render` action shown on the Library row or in the Player. If the failure mentions a missing command, install or expose that tool first (see `Settings ▸ Audio tools`).
+Use the `Retry render` action shown on the Library row or in the Player. The separation engine and its model are bundled with Backline Boost, so a persistent failure usually means a corrupt build — rebuild Backline Boost and retry.
 
 ### Drum Boost Or Drumless Plays Original
 
@@ -274,7 +259,6 @@ The current prototype intentionally keeps some things narrow:
 - Batch import and batch processing are not built yet.
 - Apple Music drag/drop imports only tracks with a real, DRM-free local audio file. DRM-protected downloads show a "Can't import this track" message; subscription-only items that aren't downloaded have no local file to import.
 - Exporting the current live `Drum Boost` mix to a standalone file is a future feature.
-- The long-term native separation engine rewrite is deferred; the current prototype uses external helper tools.
 
 ## Quick Workflows
 

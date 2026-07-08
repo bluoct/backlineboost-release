@@ -50,14 +50,13 @@ struct SidebarView: View {
             .padding(.horizontal, 12)
             .padding(.top, 18)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    playlistsSection
-                    sectionDivider
-                    tracksSection
-                }
-                .padding(.bottom, 18)
-            }
+            // Playlists (with its own overflow cap) and the divider stay pinned
+            // so a long library can never scroll them out of view; only the
+            // track list scrolls, and it claims the remaining height.
+            playlistsSection
+            sectionDivider
+            tracksSection
+                .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(width: 268)
         .background(BackbeatStyle.sidebarBackground)
@@ -210,6 +209,15 @@ struct SidebarView: View {
         .buttonStyle(.plain)
     }
 
+    // Tracks mirror the Playlists overflow: a short, non-scrolling preview by
+    // default, expanding into a scrollable region that holds the rest.
+    private var tracksDisplayLimit: Int { 3 }
+
+    private var visibleTracks: [BackbeatTrack] {
+        guard !store.isTracksOverflowExpanded else { return store.tracks }
+        return Array(store.tracks.prefix(tracksDisplayLimit))
+    }
+
     private var tracksSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             sectionToggle(
@@ -226,15 +234,58 @@ struct SidebarView: View {
             .padding(.bottom, 10)
 
             if !store.isTracksSectionCollapsed {
-                LazyVStack(spacing: 4) {
-                    ForEach(Array(store.tracks.enumerated()), id: \.element.id) { index, track in
-                        sidebarRow(track, index: index)
+                let hasOverflow = store.tracks.count > tracksDisplayLimit
+                if hasOverflow && store.isTracksOverflowExpanded {
+                    // Expanded: the ScrollView wraps only the rows and takes the
+                    // sidebar's remaining height, so the pinned sections above
+                    // never clip and "Show less" stays anchored at the bottom.
+                    ScrollView {
+                        trackRows
+                            .padding(.bottom, 12)
+                    }
+                    showMoreTracksButton
+                } else {
+                    trackRows
+                        .padding(.bottom, hasOverflow ? 4 : 12)
+                    if hasOverflow {
+                        showMoreTracksButton
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 12)
             }
         }
+    }
+
+    private var trackRows: some View {
+        LazyVStack(spacing: 4) {
+            ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { index, track in
+                sidebarRow(track, index: index)
+            }
+        }
+        .padding(.horizontal, 10)
+    }
+
+    private var showMoreTracksButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                store.isTracksOverflowExpanded.toggle()
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .rotationEffect(.degrees(store.isTracksOverflowExpanded ? 180 : 0))
+                Text(store.isTracksOverflowExpanded
+                    ? "Show less"
+                    : "Show \(store.tracks.count - tracksDisplayLimit) more")
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(BackbeatStyle.mutedText)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var sectionDivider: some View {

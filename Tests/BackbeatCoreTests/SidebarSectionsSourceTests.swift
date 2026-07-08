@@ -49,4 +49,26 @@ final class SidebarSectionsSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("count: store.playlists.count"))
         XCTAssertTrue(source.contains("count: store.tracks.count"))
     }
+
+    func testTracksAreCappedAndExpandIntoAScrollRegion() throws {
+        let source = try readSource("Sources/Backbeat/Views/SidebarView.swift")
+        // Tracks default to a short preview and expand into an overflow scroll,
+        // mirroring the Playlists cap.
+        XCTAssertTrue(source.contains("tracksDisplayLimit"))
+        XCTAssertTrue(source.contains("prefix(tracksDisplayLimit)"))
+        XCTAssertTrue(source.contains("store.tracks.count > tracksDisplayLimit"))
+        XCTAssertTrue(source.contains("store.isTracksOverflowExpanded.toggle()"))
+    }
+
+    func testOnlyTheTrackListScrollsWhilePlaylistsStayPinned() throws {
+        let source = try readSource("Sources/Backbeat/Views/SidebarView.swift")
+        // The sidebar body no longer wraps playlists + tracks in one ScrollView.
+        // The single ScrollView now lives inside the tracks section (defined
+        // below `body`), so Playlists stays pinned above a scrolling track list…
+        let scroll = try XCTUnwrap(source.range(of: "ScrollView"))
+        let tracksDef = try XCTUnwrap(source.range(of: "private var tracksSection"))
+        XCTAssertGreaterThan(scroll.lowerBound, tracksDef.lowerBound)
+        // …and that scroll region takes the sidebar's remaining height.
+        XCTAssertTrue(source.contains(".frame(maxHeight: .infinity, alignment: .top)"))
+    }
 }
