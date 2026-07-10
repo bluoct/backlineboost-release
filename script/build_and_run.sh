@@ -6,7 +6,7 @@ APP_NAME="Backline Boost"
 PRODUCT_NAME="Backbeat"   # Swift executable target name; the built binary is named this
 BUNDLE_ID="com.bluoct.backlineboost"
 MIN_SYSTEM_VERSION="14.0"
-APP_VERSION="1.0.0"
+APP_VERSION="2.1.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"

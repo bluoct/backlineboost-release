@@ -36,6 +36,30 @@ final class CustomEngineSeamSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("try Task.checkCancellation()"))
     }
 
+    func testCustomEngineRebuildsCacheWhenLoadOrBuildFails() throws {
+        let source = try readSource("Sources/BackbeatSeparationMLX/Engine/CustomHTDemucsSeparator.swift")
+        // A converted cache that passes the bare fileExists check but can't be
+        // loaded/built from must be invalidated and rebuilt once, not fail every
+        // render forever (F10).
+        XCTAssertTrue(source.contains("private func buildPipeline()"))
+        XCTAssertTrue(source.contains("private func convertLoadAndBuild()"))
+        XCTAssertTrue(
+            source.contains("removeItem"),
+            "A failed load/build must delete the stale cache before retrying (F10)."
+        )
+    }
+
+    func testCompiledForwardDoesNotRetainThePipeline() throws {
+        let source = try readSource("Sources/BackbeatSeparationMLX/Engine/CustomHTDemucsPipeline.swift")
+        // The compiled forward is a stored lazy closure; a strong [self] capture
+        // pinned the ~340 MB fp32 weight set for the process lifetime (F11).
+        XCTAssertTrue(source.contains("MLX.compile { [weak self]"))
+        XCTAssertFalse(source.contains("MLX.compile { [self]"))
+        // The per-window output slice is load-bearing (compiled functions recycle
+        // their output buffers) and must not be removed while touching this file.
+        XCTAssertTrue(source.contains("combined[window]"))
+    }
+
     private func readSource(_ relativePath: String) throws -> String {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

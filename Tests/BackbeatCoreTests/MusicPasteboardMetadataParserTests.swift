@@ -161,6 +161,62 @@ final class MusicPasteboardMetadataParserTests: XCTestCase {
         )
     }
 
+    // A multi-track Music drag vends a real file URL for file-reference
+    // tracks only, while the combined metadata plist describes every track —
+    // the drop must import the union or a mixed drag loses songs
+    // (2026-07-08: a seven-track drop imported one).
+    func testMergedImportCandidatesUnionsBothSources() {
+        let direct = [URL(fileURLWithPath: "/tmp/file-backed.m4a")]
+        let metadata = [
+            URL(fileURLWithPath: "/tmp/cloud-one.m4a"),
+            URL(fileURLWithPath: "/tmp/cloud-two.m4a")
+        ]
+
+        let merged = MusicPasteboardMetadataParser.mergedImportCandidates(
+            direct: direct,
+            metadataLocations: metadata
+        )
+
+        XCTAssertEqual(
+            merged.map(\.lastPathComponent),
+            ["file-backed.m4a", "cloud-one.m4a", "cloud-two.m4a"]
+        )
+    }
+
+    func testMergedImportCandidatesDeduplicatesByStandardizedPath() {
+        // The metadata plist usually repeats the file-backed track's Location;
+        // the same file must not import twice (a second copy would trip the
+        // duplicate detector mid-batch and raise a spurious warning).
+        let direct = [URL(fileURLWithPath: "/tmp/subdir/../same.m4a")]
+        let metadata = [
+            URL(fileURLWithPath: "/tmp/same.m4a"),
+            URL(fileURLWithPath: "/tmp/other.m4a")
+        ]
+
+        let merged = MusicPasteboardMetadataParser.mergedImportCandidates(
+            direct: direct,
+            metadataLocations: metadata
+        )
+
+        XCTAssertEqual(merged.map(\.lastPathComponent), ["same.m4a", "other.m4a"])
+    }
+
+    func testMergedImportCandidatesHandleEmptySources() {
+        let only = [URL(fileURLWithPath: "/tmp/a.m4a")]
+
+        XCTAssertEqual(
+            MusicPasteboardMetadataParser.mergedImportCandidates(direct: [], metadataLocations: only),
+            only
+        )
+        XCTAssertEqual(
+            MusicPasteboardMetadataParser.mergedImportCandidates(direct: only, metadataLocations: []),
+            only
+        )
+        XCTAssertTrue(
+            MusicPasteboardMetadataParser.mergedImportCandidates(direct: [], metadataLocations: []).isEmpty
+        )
+    }
+
     func testUnimportableTracksIgnoreStreamingLocations() throws {
         // A cloud/streaming entry with a non-file Location is not a local
         // dead-end — nothing to warn about.

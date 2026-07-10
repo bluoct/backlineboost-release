@@ -25,13 +25,23 @@ final class PlayerDetailPlaybackSourceTests: XCTestCase {
         XCTAssertTrue(actions.contains("selectRenderedTrackForInspection(track.id)"), "TrackRowActions should inspect rendered rows without taking over now-playing.")
         XCTAssertTrue(actions.contains("selectTrackForPlayback(track.id, restart: true)"))
 
-        for path in [
-            "Sources/Backbeat/Views/LibraryView.swift",
-            "Sources/Backbeat/Views/SidebarView.swift"
-        ] {
-            let source = try readSource(path)
-            XCTAssertTrue(source.contains("rowActions.tapGesture(for: track)"), "\(path) should route row taps through the shared TrackRowActions helper.")
-        }
+        // The sidebar keeps the shared single/double dispatcher (single-click
+        // opens); the library's single-click became native List selection, so
+        // only the double-click play routes through the shared helper there.
+        let sidebar = try readSource("Sources/Backbeat/Views/SidebarView.swift")
+        XCTAssertTrue(
+            sidebar.contains("rowActions.tapGesture(for: track, queueing: sortedIDs)"),
+            "SidebarView should route row taps through the shared TrackRowActions helper with the full sorted queue context."
+        )
+        let library = try readSource("Sources/Backbeat/Views/LibraryView.swift")
+        XCTAssertTrue(
+            library.contains("rowActions.playFromStart(track, queueing: visibleTrackIDs)"),
+            "LibraryView double-click should play through the shared TrackRowActions helper with the visible-order queue context."
+        )
+        XCTAssertTrue(
+            library.contains("rowActions.open(track)"),
+            "LibraryView should keep an explicit open-in-Player affordance now that single-click selects."
+        )
 
         for path in [
             "Sources/Backbeat/Views/TrackRowActions.swift",
@@ -93,17 +103,23 @@ final class PlayerDetailPlaybackSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("store.nowPlayingTrackID = track.id"))
         XCTAssertTrue(source.contains("store.setActiveQueueSource(.drumBoost)"))
         XCTAssertTrue(source.contains("store.setPlaybackPlaying(false)"))
-        XCTAssertTrue(source.contains("store.setPlaybackElapsed(startElapsed, duration: track.duration)"))
+        XCTAssertTrue(source.contains("store.setPlaybackElapsed(startElapsed, duration: transportDuration(for: track))"))
         XCTAssertTrue(source.contains("store.playbackErrorMessage = error.localizedDescription"))
     }
 
-    func testPracticeLoopBoundsSeekTheActiveRenderEngine() throws {
+    func testPracticeLoopBoundsSyncTheActiveRenderEngineChain() throws {
         let source = try readSource("Sources/Backbeat/Services/AudioPlaybackController.swift")
 
         XCTAssertTrue(source.contains("let engine = activeRenderEngine(for: track)"))
         XCTAssertTrue(source.contains("let current = engine.currentElapsed()"))
-        XCTAssertTrue(source.contains("engine.seek(to: range.start"))
-        XCTAssertTrue(source.contains("store.setPlaybackElapsed(range.start, duration: track.duration)"))
+        XCTAssertTrue(
+            source.contains("engine.setSectionLoop("),
+            "Bounds edits push the loop into the engine's pre-scheduled chain instead of seeking every wrap (D-094)."
+        )
+        XCTAssertTrue(
+            source.contains("store.setPlaybackElapsed(range.start, duration: duration)"),
+            "The immediate store write preserves the old snap UX while the debounced chain rebuild settles behind it."
+        )
     }
 
     func testPlayerDetailUsesRoutablePlaybackSourcePicker() throws {

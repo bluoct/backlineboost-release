@@ -29,22 +29,27 @@ final class MusicLibraryArtworkSourceTests: XCTestCase {
     }
 
     func testImportLooksUpMusicArtworkOnlyForMusicDragsAndOnlyWhenArtless() throws {
-        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
-
+        let core = try readSource("Sources/BackbeatCore/Services/TrackImportPipeline.swift")
         XCTAssertTrue(
-            source.contains("if artworkData == nil && musicLibraryArtwork {"),
-            "Embedded artwork always wins; the library lookup is a fallback for artless files, gated to Music-drag imports so Finder/panel imports never raise the media-library consent prompt."
+            core.contains("if artworkData == nil && useArtworkFallback, let artworkFallback {"),
+            "Embedded artwork always wins; the injected fallback runs only for artless files and only when the caller enables it (Music drags)."
         )
         XCTAssertTrue(
-            source.contains("MusicLibraryArtworkProvider().artworkData(forFileAt: url)"),
-            "The lookup must use the original dragged URL — it is the path Music's own database records."
-        )
-        XCTAssertTrue(
-            source.contains("import.artwork stored=\\(artworkURL != nil) source=\\(artworkSource, privacy: .public)"),
+            core.contains("import.artwork stored=\\(artworkURL != nil) source=\\(artworkSource, privacy: .public)"),
             "The structured source= field (embedded|musiclibrary|none) is how a missing graphic gets diagnosed from debug.log."
         )
+        XCTAssertFalse(
+            core.contains("import iTunesLibrary"),
+            "iTunesLibrary must never move into Core — the consent-prompting lookup stays app-side behind the artworkFallback seam (D-087)."
+        )
+
+        let root = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
         XCTAssertTrue(
-            source.contains("musicLibraryArtwork: false"),
+            root.contains("MusicLibraryArtworkProvider().artworkData(forFileAt: url)"),
+            "The app injects the Music-library lookup as the pipeline's artworkFallback — it must use the original dragged URL, the path Music's own database records."
+        )
+        XCTAssertTrue(
+            root.contains("musicLibraryArtwork: false"),
             "Finder drops, the import panel, and folder imports must keep the lookup disabled."
         )
     }

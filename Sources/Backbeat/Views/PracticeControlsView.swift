@@ -163,13 +163,13 @@ struct PracticeControlsView<DrumsContent: View>: View {
 
             HStack(spacing: 10) {
                 markerButton("A") {
-                    playback.setPracticeLoopStart(store.playbackElapsed, track: track, store: store)
+                    playback.capturePracticeLoopStart(track: track, store: store)
                 }
                 Text(store.practiceLoopRange.map { BackbeatFormat.duration($0.start) } ?? "0:00")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(BackbeatStyle.secondaryText)
                 markerButton("B") {
-                    playback.setPracticeLoopEnd(store.playbackElapsed, track: track, store: store)
+                    playback.capturePracticeLoopEnd(track: track, store: store)
                 }
                 Text(store.practiceLoopRange.map { BackbeatFormat.duration($0.end) } ?? "0:00")
                     .font(.system(size: 12, design: .monospaced))

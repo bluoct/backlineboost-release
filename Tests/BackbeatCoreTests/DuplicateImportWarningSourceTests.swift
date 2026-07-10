@@ -2,10 +2,10 @@ import XCTest
 
 final class DuplicateImportWarningSourceTests: XCTestCase {
     func testImportChecksForDuplicatesBeforeStoringTheFile() throws {
-        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+        let source = try readSource("Sources/BackbeatCore/Services/TrackImportPipeline.swift")
 
         let detectorRange = source.range(of: "DuplicateTrackDetector()")
-        let storeRange = source.range(of: "ManagedAudioLibrary().storeSourceFile")
+        let storeRange = source.range(of: "managedLibrary.storeSourceFile")
         XCTAssertNotNil(detectorRange)
         XCTAssertNotNil(storeRange)
         if let detectorRange, let storeRange {

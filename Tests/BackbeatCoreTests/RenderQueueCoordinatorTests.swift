@@ -212,6 +212,25 @@ final class RenderQueueCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.statusDisplay(for: store.track(id: trackB.id)!))
     }
 
+    func testRenderCompletionNotifiesLibraryChangedSoItCanBePersisted() async throws {
+        let (store, executor, coordinator) = makeFixture()
+        let track = importTrack(store, title: "A")
+        var changeCount = 0
+        coordinator.onLibraryChanged = { changeCount += 1 }
+
+        coordinator.enqueue(track.id)
+        try await waitUntil { await executor.started == [track.id] }
+        let task = coordinator.activeRenderTask
+        await executor.completeNext(.success(makeResult()))
+        await task?.value
+
+        XCTAssertGreaterThanOrEqual(
+            changeCount,
+            1,
+            "a finished render must notify so the app persists it even when no window is observing (F8)"
+        )
+    }
+
     // MARK: - Fixture
 
     private func makeFixture() -> (LibraryStore, GatedRenderExecutor, RenderQueueCoordinator) {

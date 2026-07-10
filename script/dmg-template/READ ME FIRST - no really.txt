@@ -1,0 +1,26 @@
+Backline Boost is a developer preview and will only run if you perform the following:
+
+1. Drag the Backline Boost icon onto the Applications directory to copy it to the correct place.
+
+2. Open Terminal (press command-space and type Terminal and hit enter)
+
+3. Copy and paste the following into the terminal window: xattr -rd com.apple.quarantine "/Applications/Backline Boost.app"
+
+4. Hit enter.
+
+Now launch Backline Boost and enjoy!
+
+
+WHAT'S NEW in 2.1.0 (since 2.0.0 — the previous preview, build 145)
+
+* Gapless practice loops — A/B loops now repeat with no gap or dropout at the loop point, in every playback mode and at every speed.
+
+* Library sorting, search, and multi-select — sort the library from the new sort menu (including by date added; your choice is remembered), filter it with the search field, and select multiple tracks at once for bulk delete. Double-click a track to play it.
+
+* Accurate track lengths — playback now measures the audio files themselves instead of trusting the imported estimate, and existing libraries are corrected automatically at launch. This fixes tracks that stopped early, hung at the very end, or drifted in Drum Boost; loops can no longer be dragged past the real end of a song.
+
+* Music imports — dragging several songs from the Music app now imports all of them, not just some. The import path was rebuilt and hardened, and artwork handling is more reliable.
+
+* Playback reliability — switching audio devices mid-song, toggling Normalize, and loop edits near the loop point all behave correctly now, and Drum Boost reports when a rendered pair can't be used instead of silently falling back to the original.
+
+* Under the hood — the separation engine's model cache now heals itself if it's damaged, several memory leaks were fixed, and a damaged library file no longer prevents the app from starting.

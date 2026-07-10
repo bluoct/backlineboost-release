@@ -68,7 +68,13 @@ public final class CustomHTDemucsPipeline {
     /// checked against the same `output` contract entry by `BackbeatLayerParity`
     /// and end to end by the bench's SI-SDR record.
     private lazy var compiledProduction: @Sendable ([MLXArray]) -> [MLXArray] =
-        MLX.compile { [self] inputs in
+        MLX.compile { [weak self] inputs in
+            // [weak self], not [self]: the strong capture in this stored lazy
+            // closure formed a retain cycle (closure ↔ self) that pinned the
+            // full fp32 weight set (~340 MB) and the compiled graph for the
+            // whole process lifetime (F11). The closure is only ever invoked
+            // through the live pipeline, so self is present.
+            guard let self else { return inputs }
             let waveform = inputs[0]
             let magnitude = gpuSpectrogram(waveform: waveform)
             let (spectral, timeEstimate) = model.forward(

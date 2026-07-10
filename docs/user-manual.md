@@ -53,9 +53,9 @@ Use it to:
 - Import a single audio file with `Import Track`.
 - Import the top-level supported audio files in a folder with `Import Folder`.
 - Drag supported audio files onto the Backline Boost window, either from Finder or directly from the Apple Music app.
-- Browse imported tracks.
-- Select a track to inspect or play.
-- Delete a track from Backline Boost after confirmation.
+- Browse imported tracks, sorted and searched however you like.
+- Select one or several tracks (Cmd-click or Shift-click extends the selection).
+- Delete one track or the whole selection from Backline Boost after confirmation.
 
 Each row shows the track's title, length, and status, plus a render "Version" column and quick actions. The status reflects where the track is in separation: `Imported`, `Waiting to render (#N)`, its current stage while separating, `Ready`, or `Render failed` (with a retry button).
 
@@ -63,9 +63,17 @@ When a track is imported, Backline Boost copies the source file into its managed
 
 If you import a file that is identical to one already in your library, Backline Boost skips it and shows an `Already in library` notice rather than creating a duplicate.
 
-Single-clicking a track opens it for inspection without stealing whatever is currently playing in the mini-player. Double-clicking a track title starts playback from `0:00`.
+### Sorting and search
 
-Deleting a track removes Backline Boost's app-managed source copy, artwork, and render files for that track. It does not delete the original file from wherever you imported it.
+The sort menu above the list orders the library by Date Added, Title, Artist, Album, or Duration, ascending or descending; the choice is remembered across launches, and the sidebar's track list follows the same order. Tracks without an artist or album tag sort to the bottom rather than mixing in. The search field filters as you type, matching titles, artists (including the filename shown when a tag is missing), and albums; the counter shows how many tracks match, and `Clear Search` restores the full list.
+
+### Selecting and playing
+
+Single-clicking a track selects it (Cmd-click and Shift-click select several). Double-clicking a track starts playback from `0:00` — and if no playlist is playing, the rest of the visible list queues up behind it in the order shown, so the library plays on like a playlist. If a playlist *is* playing, the double-clicked track plays once and the playlist then resumes where it left off. The row's play/chevron button opens a track in the Player without changing what's playing.
+
+### Deleting
+
+The trash button deletes a single track; with several selected, press Delete or use `Delete Selected (N)`. A confirmation lists what will be removed. Deleting removes Backline Boost's app-managed source copy, artwork, and render files for those tracks. It does not delete the original files from wherever you imported them.
 
 ## Stem Separation (Automatic)
 

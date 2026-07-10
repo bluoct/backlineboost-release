@@ -29,6 +29,7 @@ public enum DebugLog {
     public static let drop = Logger(subsystem: subsystem, category: "MusicDrop")
     public static let playback = Logger(subsystem: subsystem, category: "playback")
     public static let library = Logger(subsystem: subsystem, category: "library")
+    public static let persistence = Logger(subsystem: subsystem, category: "persistence")
 
     // MARK: - Capture setting (machine-local, UserDefaults)
 

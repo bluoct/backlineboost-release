@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ManagedAudioLibrary {
+public struct ManagedAudioLibrary: Sendable {
     public let sourceDirectory: URL
 
     public init(sourceDirectory: URL = BackbeatFileLocations.managedSourceDirectory) {

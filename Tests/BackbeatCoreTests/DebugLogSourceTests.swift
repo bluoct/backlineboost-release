@@ -56,13 +56,16 @@ final class DebugLogSourceTests: XCTestCase {
     }
 
     func testImportPathEmitsStructuredMarkers() throws {
-        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+        // The import pipeline now lives in Core (F2); its per-file markers are
+        // pinned by reading the Core source, not the root view.
+        let source = try readSource("Sources/BackbeatCore/Services/TrackImportPipeline.swift")
         // Dotted `area.event` markers keep the import lifecycle greppable, and
         // the artwork marker is what a missing-artwork report will be read from.
         XCTAssertTrue(source.contains("DebugLog.importing"))
         XCTAssertTrue(source.contains("import.start"))
         XCTAssertTrue(source.contains("import.metadata"))
         XCTAssertTrue(source.contains("import.artwork"))
+        XCTAssertTrue(source.contains("import.done"))
     }
 
     private func readSource(_ relativePath: String) throws -> String {

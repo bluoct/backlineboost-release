@@ -213,9 +213,11 @@ struct SidebarView: View {
     // default, expanding into a scrollable region that holds the rest.
     private var tracksDisplayLimit: Int { 3 }
 
-    private var visibleTracks: [BackbeatTrack] {
-        guard !store.isTracksOverflowExpanded else { return store.tracks }
-        return Array(store.tracks.prefix(tracksDisplayLimit))
+    // The sidebar mirrors the library's persisted sort so the two surfaces
+    // never show conflicting orders. O(n log n) — evaluate once per render
+    // (trackRows) and pass down, never per row.
+    private var sortedTracks: [BackbeatTrack] {
+        LibraryTrackQuery.visibleTracks(in: store.tracks, sort: store.librarySortOrder, searchText: "")
     }
 
     private var tracksSection: some View {
@@ -256,9 +258,12 @@ struct SidebarView: View {
     }
 
     private var trackRows: some View {
-        LazyVStack(spacing: 4) {
-            ForEach(Array(visibleTracks.enumerated()), id: \.element.id) { index, track in
-                sidebarRow(track, index: index)
+        let sorted = sortedTracks
+        let sortedIDs = sorted.map(\.id)
+        let rows = store.isTracksOverflowExpanded ? sorted : Array(sorted.prefix(tracksDisplayLimit))
+        return LazyVStack(spacing: 4) {
+            ForEach(rows) { track in
+                sidebarRow(track, queueing: sortedIDs)
             }
         }
         .padding(.horizontal, 10)
@@ -329,9 +334,11 @@ struct SidebarView: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    private func sidebarRow(_ track: BackbeatTrack, index: Int) -> some View {
+    private func sidebarRow(_ track: BackbeatTrack, queueing sortedIDs: [BackbeatTrack.ID]) -> some View {
         HStack(spacing: 10) {
-            TrackTile(track: track, index: index, size: 30, fontSize: 11)
+            // Tile hue seeds from the persisted position — stable across sort
+            // changes and consistent with the library, Player, and mini-player.
+            TrackTile(track: track, index: store.tracks.firstIndex(where: { $0.id == track.id }) ?? 0, size: 30, fontSize: 11)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
                     .font(.system(size: 13, weight: .semibold))
@@ -352,7 +359,9 @@ struct SidebarView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(rowBackground(track), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
-        .gesture(rowActions.tapGesture(for: track))
+        // Double-click queues the FULL sorted library from this track (not
+        // the prefix-limited sidebar slice) — same hybrid as the library view.
+        .gesture(rowActions.tapGesture(for: track, queueing: sortedIDs))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(track.title), \(track.artist ?? "Unknown Artist"), \(BackbeatFormat.duration(track.duration))")
         .accessibilityAddTraits(.isButton)

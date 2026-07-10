@@ -54,6 +54,20 @@ public enum MusicPasteboardMetadataParser {
         }
     }
 
+    /// Union of a drag's direct `public.file-url`s and the metadata plist's
+    /// `Location` URLs, deduplicated by standardized path (direct URLs first).
+    /// A multi-track Music drag vends a real file URL for SOME tracks
+    /// (file-reference tracks) while every dragged track is described by the
+    /// combined metadata plist on the first pasteboard item — importing
+    /// either source alone silently drops the other's tracks (2026-07-08:
+    /// a seven-track drop imported one song).
+    public static func mergedImportCandidates(direct: [URL], metadataLocations: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return (direct.map(\.standardizedFileURL) + metadataLocations).filter { url in
+            seen.insert(url.path).inserted
+        }
+    }
+
     /// A track that the Music metadata plist stores as a real local file yet
     /// Backbeat cannot import — a DRM-protected Apple Music download (`.m4p`)
     /// or an unsupported format. Surfaced so a rejected drop explains itself

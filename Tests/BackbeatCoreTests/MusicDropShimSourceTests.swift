@@ -10,8 +10,8 @@ final class MusicDropShimSourceTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("MusicDropShim("))
         XCTAssertTrue(
-            source.contains("await importAudioFilesNow(urls, managesSecurityScope: false, musicLibraryArtwork: true)"),
-            "The shim must await the import loop so its promise scratch directory outlives the copy into the managed library — and only Music drags may enable the Music-library artwork lookup."
+            source.contains("await pipeline.enqueue(urls: urls, managesSecurityScope: false, useArtworkFallback: true).value"),
+            "The shim must await through the shared import chain so its promise scratch directory outlives the copy into the managed library — and only Music drags may enable the artwork fallback."
         )
     }
 
@@ -67,6 +67,25 @@ final class MusicDropShimSourceTests: XCTestCase {
         )
     }
 
+    func testShimImportsUnionOfDirectURLsAndMetadataLocations() throws {
+        let source = try readSource("Sources/Backbeat/Views/MusicDropShimView.swift")
+
+        XCTAssertTrue(
+            source.contains("MusicPasteboardMetadataParser.mergedImportCandidates"),
+            "A multi-track Music drag vends a file URL for SOME tracks and metadata Locations for all of them — the 2026-07-08 bug imported one song from a seven-track drop because the direct-URL tier returned early. The shim must import the union."
+        )
+        XCTAssertFalse(
+            source.contains("if !usableDirect.isEmpty"),
+            "The direct-URL early return is the exact shape that swallowed multi-track drags; direct and metadata candidates must flow into one merged import."
+        )
+
+        let pipeline = try readSource("Sources/BackbeatCore/Services/TrackImportPipeline.swift")
+        XCTAssertTrue(
+            pipeline.contains("failures.append"),
+            "One failing file must not abort the rest of a multi-file import batch."
+        )
+    }
+
     func testShimExplainsDeadEndDropsInsteadOfFailingSilently() throws {
         let shim = try readSource("Sources/Backbeat/Views/MusicDropShimView.swift")
         XCTAssertTrue(
@@ -74,6 +93,10 @@ final class MusicDropShimSourceTests: XCTestCase {
             "A drop that lands no audio must detect protected/unsupported tracks so it can explain itself."
         )
         XCTAssertTrue(shim.contains("reportUnimportable"))
+        XCTAssertTrue(
+            shim.contains("missingFiles:"),
+            "Partial imports must explain skipped tracks (missing local file / DRM) instead of dropping them silently."
+        )
 
         let root = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
         XCTAssertTrue(
@@ -95,6 +118,19 @@ final class MusicDropShimSourceTests: XCTestCase {
             "Permanent payload logging is the documented diagnostic path for Music pasteboard drift across macOS releases."
         )
         XCTAssertTrue(source.contains("PromisedFileAwaiter"))
+    }
+
+    func testDeadEndLegacyPromiseStillExplainsTheDrop() throws {
+        let source = try readSource("Sources/Backbeat/Views/MusicDropShimView.swift")
+
+        XCTAssertTrue(
+            source.contains("fulfillLegacyPromises(from: sender, pasteboard: pasteboard, unimportable: unimportable, missingFiles: missingFiles)"),
+            "The tier-3 path must carry the collected reasons so a promise that delivers nothing can still explain itself (F9)."
+        )
+        XCTAssertTrue(
+            source.contains("fallbackMessage"),
+            "A legacy promise that stabilizes zero audio must surface a message, not return true and silently swallow the drop (F9)."
+        )
     }
 
     private func readSource(_ relativePath: String) throws -> String {

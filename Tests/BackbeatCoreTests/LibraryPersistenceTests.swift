@@ -157,6 +157,68 @@ final class LibraryPersistenceTests: XCTestCase {
         XCTAssertEqual(loaded.tracks.first?.loudnessProfile, profile)
     }
 
+    func testSnapshotRoundTripsDurationResolvedMarker() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-duration-resolved-persistence-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = root.appendingPathComponent("library.json")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let trackID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let track = BackbeatTrack(
+            id: trackID,
+            title: "Sample Song",
+            duration: 271.666,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("sources/sample_song.m4a"),
+            isDurationResolved: true
+        )
+        let snapshot = LibrarySnapshot(tracks: [track], selectedTrackID: trackID, volume: 0.8)
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+
+        try persistence.save(snapshot)
+        let loaded = try XCTUnwrap(persistence.load())
+
+        XCTAssertEqual(loaded.tracks.first?.isDurationResolved, true)
+    }
+
+    func testOlderSnapshotTrackDefaultsDurationUnresolved() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-duration-unresolved-persistence-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = root.appendingPathComponent("library.json")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let trackID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let track = BackbeatTrack(
+            id: trackID,
+            title: "Sample Song",
+            duration: 271.666,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("sources/sample_song.m4a"),
+            isDurationResolved: true
+        )
+        let snapshot = LibrarySnapshot(tracks: [track], selectedTrackID: trackID, volume: 0.8)
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+        try persistence.save(snapshot)
+
+        // Simulate a legacy snapshot written before the marker existed by
+        // stripping the key a pre-F1 save would never have written.
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        var tracks = try XCTUnwrap(json["tracks"] as? [[String: Any]])
+        tracks[0].removeValue(forKey: "isDurationResolved")
+        json["tracks"] = tracks
+        try JSONSerialization.data(withJSONObject: json).write(to: snapshotURL)
+
+        let loaded = try XCTUnwrap(persistence.load())
+
+        XCTAssertEqual(loaded.tracks.first?.isDurationResolved, false)
+    }
+
     func testOlderSnapshotDefaultsPlaybackNormalizationSettings() throws {
         let data = """
         {
@@ -559,6 +621,81 @@ final class LibraryPersistenceTests: XCTestCase {
         XCTAssertEqual(loaded.nowPlayingPlaybackSource, .drumless)
     }
 
+    func testSnapshotRoundTripsLibrarySortOrderAndDateAdded() throws {
+        let importedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let track = BackbeatTrack(
+            title: "Dated",
+            duration: 180,
+            status: .ready,
+            sourceURL: URL(fileURLWithPath: "/tmp/dated.m4a"),
+            dateAdded: importedAt
+        )
+        let snapshot = LibrarySnapshot(
+            tracks: [track],
+            selectedTrackID: track.id,
+            volume: 0.8,
+            librarySortOrder: LibrarySortOrder(field: .artist, ascending: false)
+        )
+
+        let data = try JSONEncoder.backbeatTestEncoder.encode(snapshot)
+        let decoded = try JSONDecoder.backbeatTestDecoder.decode(LibrarySnapshot.self, from: data)
+
+        XCTAssertEqual(decoded.librarySortOrder, LibrarySortOrder(field: .artist, ascending: false))
+        XCTAssertEqual(decoded.tracks.first?.dateAdded, importedAt)
+        XCTAssertEqual(decoded.makeStore().librarySortOrder, LibrarySortOrder(field: .artist, ascending: false))
+    }
+
+    func testSnapshotWithoutSortOrderOrDateAddedKeysDefaultsSilently() throws {
+        // A pre-D-102 library file has neither key: the sort preference must
+        // default and every track must decode dateAdded == nil, with ZERO
+        // lossy-load diagnostics (missing keys are forward-compat, not damage).
+        let track = BackbeatTrack(
+            title: "Legacy",
+            duration: 180,
+            status: .ready,
+            sourceURL: URL(fileURLWithPath: "/tmp/legacy.m4a")
+        )
+        let snapshot = LibrarySnapshot(tracks: [track], selectedTrackID: track.id, volume: 0.8)
+        let data = try JSONEncoder.backbeatTestEncoder.encode(snapshot)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json.removeValue(forKey: "librarySortOrder")
+        var tracksJSON = try XCTUnwrap(json["tracks"] as? [[String: Any]])
+        tracksJSON[0].removeValue(forKey: "dateAdded")
+        json["tracks"] = tracksJSON
+        let strippedData = try JSONSerialization.data(withJSONObject: json)
+
+        let diagnostics = LibraryDecodeDiagnostics()
+        let decoder = JSONDecoder.backbeatTestDecoder
+        decoder.userInfo[LibrarySnapshot.decodeDiagnosticsKey] = diagnostics
+        let decoded = try decoder.decode(LibrarySnapshot.self, from: strippedData)
+
+        XCTAssertEqual(decoded.librarySortOrder, .default)
+        XCTAssertNil(decoded.tracks.first?.dateAdded)
+        XCTAssertEqual(diagnostics.defaultedFieldCount, 0)
+        XCTAssertEqual(diagnostics.droppedTrackCount, 0)
+    }
+
+    func testUnknownSortFieldValueDegradesWithoutDiagnostics() throws {
+        // A future build may persist a sort field this build doesn't know.
+        // The preference must degrade member-wise (unknown field → default
+        // field, the still-valid direction survives) WITHOUT tripping the
+        // lossy-load diagnostics — a sort pref must never raise the
+        // corruption banner or trigger a .corrupt backup.
+        let snapshot = LibrarySnapshot(tracks: [], selectedTrackID: nil, volume: 0.8)
+        let data = try JSONEncoder.backbeatTestEncoder.encode(snapshot)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        json["librarySortOrder"] = ["field": "albumArtist", "ascending": false]
+        let futureData = try JSONSerialization.data(withJSONObject: json)
+
+        let diagnostics = LibraryDecodeDiagnostics()
+        let decoder = JSONDecoder.backbeatTestDecoder
+        decoder.userInfo[LibrarySnapshot.decodeDiagnosticsKey] = diagnostics
+        let decoded = try decoder.decode(LibrarySnapshot.self, from: futureData)
+
+        XCTAssertEqual(decoded.librarySortOrder, LibrarySortOrder(field: .dateAdded, ascending: false))
+        XCTAssertEqual(diagnostics.defaultedFieldCount, 0)
+    }
+
     func testLoadStoreOrDefaultPreservesUnreadableSnapshotAndStartsEmpty() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("backbeat-persistence-\(UUID().uuidString)", isDirectory: true)
@@ -856,6 +993,83 @@ final class LibraryPersistenceTests: XCTestCase {
         let backups = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.contains("corrupt") }
         XCTAssertEqual(backups.count, 1)
+    }
+
+    func testLoadStoreOrDefaultDropsMalformedPlaylistAndKeepsRest() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-persistence-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = root.appendingPathComponent("library.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let track = BackbeatTrack(
+            title: "Kept",
+            duration: 200,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("sources/kept.m4a")
+        )
+        let playlist = BackbeatPlaylist(
+            name: "Practice",
+            trackIDs: [track.id],
+            defaultPlaybackSource: .drumless,
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let snapshot = LibrarySnapshot(
+            tracks: [track],
+            selectedTrackID: track.id,
+            playlists: [playlist],
+            volume: 0.8
+        )
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+        try persistence.save(snapshot)
+
+        // Inject a bogus playlist element. Before F6 one malformed playlist threw
+        // the whole decode, wiping the healthy library.
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        var playlists = try XCTUnwrap(json["playlists"] as? [Any])
+        playlists.append(["bogus": true])
+        json["playlists"] = playlists
+        try JSONSerialization.data(withJSONObject: json).write(to: snapshotURL)
+
+        let store = persistence.loadStoreOrDefault()
+
+        XCTAssertEqual(store.tracks.map(\.id), [track.id], "the track must survive a malformed playlist")
+        XCTAssertEqual(store.playlists.map(\.id), [playlist.id], "the healthy playlist must survive; only the bogus one is skipped")
+        XCTAssertNotNil(store.libraryLoadRecoveryMessage)
+    }
+
+    func testLoadStoreOrDefaultToleratesMalformedScalarWithoutWipingLibrary() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-persistence-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = root.appendingPathComponent("library.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let track = BackbeatTrack(
+            title: "Scalar",
+            duration: 150,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("sources/scalar.m4a")
+        )
+        let snapshot = LibrarySnapshot(tracks: [track], selectedTrackID: track.id, volume: 0.7)
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+        try persistence.save(snapshot)
+
+        // A present-but-type-mismatched Bool scalar. Before F6 this threw the
+        // whole init(from:) and reset to an empty library over one bad field;
+        // now it defaults, is recorded, and the tracks survive.
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        json["isPlaylistsSectionCollapsed"] = "not-a-bool"
+        try JSONSerialization.data(withJSONObject: json).write(to: snapshotURL)
+
+        let store = persistence.loadStoreOrDefault()
+
+        XCTAssertEqual(store.tracks.map(\.id), [track.id], "a malformed scalar must not wipe the library")
+        XCTAssertFalse(store.isPlaylistsSectionCollapsed, "the malformed Bool falls back to its default")
+        XCTAssertNotNil(store.libraryLoadRecoveryMessage)
     }
 }
 

@@ -40,8 +40,20 @@ public struct AudioMetadata: Equatable, Sendable {
 public struct AudioMetadataReader: Sendable {
     public init() {}
 
+    /// A slim precise-duration probe: no metadata, artwork, or track loading.
+    /// Used by the launch backfill sweep so re-checking a track's duration
+    /// never pays the cost of a full `read(url:)`.
+    public func preciseDuration(url: URL) async throws -> TimeInterval {
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+        let durationTime = try await asset.load(.duration)
+        return CMTimeGetSeconds(durationTime)
+    }
+
     public func read(url: URL) async throws -> AudioMetadata {
-        let asset = AVURLAsset(url: url)
+        // Prefer precise timing so VBR sources (e.g. VBR MP3) persist an
+        // accurate duration instead of AVFoundation's fast estimate, which can
+        // drift by more than the render-pair validation tolerance (F1).
+        let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
         let durationTime = try await asset.load(.duration)
         let tracks = try await asset.loadTracks(withMediaType: .audio)
         let firstTrack = tracks.first

@@ -73,6 +73,31 @@ public struct SeparationInputLoader: Sendable {
 
         // demucs convert_audio_channels: keep at most the first two channels.
         let keptChannelCount = min(sourceChannelCount, 2)
+
+        var channels: [[Float]]
+        if format.sampleRate == targetSampleRate {
+            channels = try decodeFully(file: file, format: format, keptChannelCount: keptChannelCount, url: url)
+        } else {
+            // Non-44.1 kHz sources stream decode→resample in one pass, so the full
+            // source-rate buffer and the full resampled buffer are never both
+            // alive at once (F13).
+            channels = try streamResample(file: file, format: format, keptChannelCount: keptChannelCount, url: url)
+        }
+        guard let frames = channels.first?.count, frames > 0 else {
+            throw SeparationInputError.conversionFailed(url)
+        }
+
+        // demucs convert_audio_channels: mono expands to both channels. Duplicating
+        // AFTER the resample does the SRC work once; the array copy is CoW-free.
+        if channels.count == 1 {
+            channels = [channels[0], channels[0]]
+        }
+        return SeparationInput(channels: channels, sampleRate: targetSampleRate)
+    }
+
+    /// Full chunked read-until-EOF with the R1 stall guard, for sources already at
+    /// the engine rate (no SRC needed).
+    private func decodeFully(file: AVAudioFile, format: AVAudioFormat, keptChannelCount: Int, url: URL) throws -> [[Float]] {
         var channels = [[Float]](repeating: [], count: keptChannelCount)
         let estimatedFrames = Int(clamping: file.length)
         for channel in 0..<keptChannelCount {
@@ -104,39 +129,30 @@ public struct SeparationInputLoader: Sendable {
         guard let decodedFrames = channels.first?.count, decodedFrames > 0 else {
             throw SeparationInputError.emptyAudio(url)
         }
-
-        if format.sampleRate != targetSampleRate {
-            channels = try resample(channels, from: format.sampleRate, url: url)
-        }
-        guard let frames = channels.first?.count, frames > 0 else {
-            throw SeparationInputError.conversionFailed(url)
-        }
-
-        // demucs convert_audio_channels: mono expands to both channels. Duplicating
-        // AFTER the resample does the SRC work once; the array copy is CoW-free.
-        if channels.count == 1 {
-            channels = [channels[0], channels[0]]
-        }
-        return SeparationInput(channels: channels, sampleRate: targetSampleRate)
+        return channels
     }
 
-    /// Anti-aliased SRC via `AVAudioConverter` at mastering quality. Follows the
-    /// hardened pull-converter shape of `AudioPCMDecoder.decodeSamples` (mid-stream
-    /// failure is carried out of the input block and becomes a hard error).
-    private func resample(_ channels: [[Float]], from sourceRate: Double, url: URL) throws -> [[Float]] {
-        let channelCount = channels.count
-        let sourceFrames = channels[0].count
+    /// Anti-aliased SRC via `AVAudioConverter` at mastering quality, pulling
+    /// 65,536-frame chunks straight from the file (trimmed to the kept channels)
+    /// so only the resampled output is fully materialized — never a second
+    /// full-track source-rate buffer (F13). `AVAudioConverter` is stateful across
+    /// `convert(...)` calls, so streaming the input is bit-equivalent to
+    /// resampling one whole in-memory buffer. Mirrors the hardened pull-converter
+    /// shape of `AudioPCMDecoder.decodeSamples`; a mid-stream read stall (R1) is
+    /// carried out of the input block and becomes a hard error.
+    private func streamResample(file: AVAudioFile, format: AVAudioFormat, keptChannelCount: Int, url: URL) throws -> [[Float]] {
+        let sourceRate = format.sampleRate
         guard
             let inputFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
                 sampleRate: sourceRate,
-                channels: AVAudioChannelCount(channelCount),
+                channels: AVAudioChannelCount(keptChannelCount),
                 interleaved: false
             ),
             let outputFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
                 sampleRate: targetSampleRate,
-                channels: AVAudioChannelCount(channelCount),
+                channels: AVAudioChannelCount(keptChannelCount),
                 interleaved: false
             ),
             let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
@@ -146,39 +162,52 @@ public struct SeparationInputLoader: Sendable {
         converter.sampleRateConverterAlgorithm = AVSampleRateConverterAlgorithm_Mastering
         converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
 
-        let chunkFrames = 65_536
-        let cursor = ResampleCursor()
+        let chunkFrames: AVAudioFrameCount = 65_536
+        guard let readBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunkFrames) else {
+            throw SeparationInputError.conversionFailed(url)
+        }
+        // The file and its read buffer are confined to the synchronously-invoked
+        // input block; box them so the @Sendable block can hold them.
+        let state = ResampleReadState(file: file, readBuffer: readBuffer)
         let inputBlock: AVAudioConverterInputBlock = { _, inputStatus in
-            if cursor.position >= sourceFrames {
+            if state.file.framePosition >= state.file.length {
                 inputStatus.pointee = .endOfStream
                 return nil
             }
-            let count = min(chunkFrames, sourceFrames - cursor.position)
-            guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(count)),
-                  let data = inputBuffer.floatChannelData else {
-                cursor.failed = true
+            do {
+                try state.file.read(into: state.readBuffer)
+            } catch {
+                state.failed = true
                 inputStatus.pointee = .endOfStream
                 return nil
             }
-            inputBuffer.frameLength = AVAudioFrameCount(count)
-            for channel in 0..<channelCount {
-                channels[channel].withUnsafeBufferPointer { source in
-                    data[channel].update(from: source.baseAddress! + cursor.position, count: count)
-                }
+            let read = Int(state.readBuffer.frameLength)
+            // R1: a read that stalls before EOF (corrupt/truncated container) must
+            // fail, not silently truncate the separation.
+            guard read > 0, let sourceData = state.readBuffer.floatChannelData,
+                  let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(read)),
+                  let inputData = inputBuffer.floatChannelData else {
+                state.failed = true
+                inputStatus.pointee = .endOfStream
+                return nil
             }
-            cursor.position += count
+            inputBuffer.frameLength = AVAudioFrameCount(read)
+            // Keep only the first `keptChannelCount` channels (demucs semantics).
+            for channel in 0..<keptChannelCount {
+                inputData[channel].update(from: sourceData[channel], count: read)
+            }
             inputStatus.pointee = .haveData
             return inputBuffer
         }
 
-        var output = [[Float]](repeating: [], count: channelCount)
-        let reserve = Int((Double(sourceFrames) * targetSampleRate / sourceRate).rounded(.up)) + chunkFrames
-        for channel in 0..<channelCount {
+        var output = [[Float]](repeating: [], count: keptChannelCount)
+        let reserve = Int((Double(Int(clamping: file.length)) * targetSampleRate / sourceRate).rounded(.up)) + Int(chunkFrames)
+        for channel in 0..<keptChannelCount {
             output[channel].reserveCapacity(reserve)
         }
 
         drain: while true {
-            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(chunkFrames)) else {
+            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: chunkFrames) else {
                 throw SeparationInputError.conversionFailed(url)
             }
             var conversionError: NSError?
@@ -187,10 +216,11 @@ public struct SeparationInputLoader: Sendable {
             case .haveData, .endOfStream, .inputRanDry:
                 if let data = outputBuffer.floatChannelData, outputBuffer.frameLength > 0 {
                     let read = Int(outputBuffer.frameLength)
-                    for channel in 0..<channelCount {
+                    for channel in 0..<keptChannelCount {
                         output[channel].append(contentsOf: UnsafeBufferPointer(start: data[channel], count: read))
                     }
                 }
+                if state.failed { throw SeparationInputError.truncatedDecode(url) }
                 if status == .endOfStream || status == .inputRanDry { break drain }
                 if outputBuffer.frameLength == 0 { break drain }
             case .error:
@@ -198,18 +228,27 @@ public struct SeparationInputLoader: Sendable {
             @unknown default:
                 throw SeparationInputError.conversionFailed(url)
             }
-            if cursor.failed { throw SeparationInputError.conversionFailed(url) }
+            if state.failed { throw SeparationInputError.truncatedDecode(url) }
         }
-        if cursor.failed { throw SeparationInputError.conversionFailed(url) }
+        if state.failed { throw SeparationInputError.truncatedDecode(url) }
+        guard let frames = output.first?.count, frames > 0 else {
+            throw SeparationInputError.emptyAudio(url)
+        }
         return output
     }
 
-    /// Reference box carrying the input-block cursor and failure flag out of the
+    /// Reference box carrying the input-block read-failure flag out of the
     /// `@Sendable` block. `convert(...)` invokes the block synchronously on the
     /// calling thread, so the mutation is never concurrent (same pattern and
     /// justification as `AudioPCMDecoder.ReadState`).
-    private final class ResampleCursor: @unchecked Sendable {
-        var position = 0
+    private final class ResampleReadState: @unchecked Sendable {
+        let file: AVAudioFile
+        let readBuffer: AVAudioPCMBuffer
         var failed = false
+
+        init(file: AVAudioFile, readBuffer: AVAudioPCMBuffer) {
+            self.file = file
+            self.readBuffer = readBuffer
+        }
     }
 }

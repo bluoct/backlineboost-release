@@ -119,6 +119,14 @@ public struct BackbeatTrack: Identifiable, Equatable, Codable, Sendable {
     public var drumMixSettings: DrumMixSettings
     public var loudnessProfile: TrackLoudnessProfile?
     public private(set) var activeRenders: [RenderVariant: RenderRecord]
+    // Whether `duration` has been read via the precise-duration probe (Phase A
+    // launch backfill). Legacy libraries decode this as false so the sweep
+    // knows which pre-existing tracks may still carry a fast estimate.
+    public var isDurationResolved: Bool
+    // When the track was imported. Legacy libraries decode nil — the true
+    // date is unrecoverable, so it is never synthetically backfilled (D-102);
+    // the sort pipeline tie-breaks nil dates by persisted array position.
+    public var dateAdded: Date?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -132,6 +140,8 @@ public struct BackbeatTrack: Identifiable, Equatable, Codable, Sendable {
         case drumMixSettings
         case loudnessProfile
         case activeRenders
+        case isDurationResolved
+        case dateAdded
     }
 
     public init(
@@ -145,7 +155,9 @@ public struct BackbeatTrack: Identifiable, Equatable, Codable, Sendable {
         artworkURL: URL? = nil,
         drumMixSettings: DrumMixSettings = DrumMixSettings(),
         loudnessProfile: TrackLoudnessProfile? = nil,
-        activeRenders: [RenderVariant: RenderRecord] = [:]
+        activeRenders: [RenderVariant: RenderRecord] = [:],
+        isDurationResolved: Bool = false,
+        dateAdded: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -158,6 +170,8 @@ public struct BackbeatTrack: Identifiable, Equatable, Codable, Sendable {
         self.drumMixSettings = drumMixSettings
         self.loudnessProfile = loudnessProfile
         self.activeRenders = activeRenders
+        self.isDurationResolved = isDurationResolved
+        self.dateAdded = dateAdded
     }
 
     public init(from decoder: Decoder) throws {
@@ -173,6 +187,8 @@ public struct BackbeatTrack: Identifiable, Equatable, Codable, Sendable {
         drumMixSettings = try container.decodeIfPresent(DrumMixSettings.self, forKey: .drumMixSettings) ?? DrumMixSettings()
         loudnessProfile = try container.decodeIfPresent(TrackLoudnessProfile.self, forKey: .loudnessProfile)
         activeRenders = try container.decodeIfPresent([RenderVariant: RenderRecord].self, forKey: .activeRenders) ?? [:]
+        isDurationResolved = try container.decodeIfPresent(Bool.self, forKey: .isDurationResolved) ?? false
+        dateAdded = try container.decodeIfPresent(Date.self, forKey: .dateAdded)
     }
 
     public func activeRender(for variant: RenderVariant) -> RenderRecord? {

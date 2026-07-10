@@ -95,6 +95,36 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(track.status, .imported)
         XCTAssertEqual(track.sourceURL, sourceURL)
         XCTAssertEqual(store.selectedTrackID, track.id)
+        XCTAssertTrue(track.isDurationResolved, "new imports already read precise duration")
+        XCTAssertNotNil(track.dateAdded, "new imports stamp their import date (D-102)")
+    }
+
+    func testImportStampsInjectedDateAdded() {
+        let store = LibraryStore()
+        let importedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let metadata = AudioMetadata(fileName: "Stamped", duration: 200, sampleRate: 44_100, channelCount: 2)
+
+        let track = store.importTrack(
+            from: metadata,
+            sourceURL: URL(fileURLWithPath: "/tmp/stamped.m4a"),
+            dateAdded: importedAt
+        )
+
+        XCTAssertEqual(track.dateAdded, importedAt)
+    }
+
+    func testSetLibrarySortOrderGuardsUnchangedWrites() {
+        let store = LibraryStore()
+        XCTAssertEqual(store.librarySortOrder, .default)
+
+        let order = LibrarySortOrder(field: .artist, ascending: false)
+        store.setLibrarySortOrder(order)
+        XCTAssertEqual(store.librarySortOrder, order)
+
+        // Setting the same value again must be a no-op write (F14 guard);
+        // observable behavior: the value is unchanged.
+        store.setLibrarySortOrder(order)
+        XCTAssertEqual(store.librarySortOrder, order)
     }
 
     func testImportFallsBackToFileNameWhenTitleMetadataIsMissing() {
@@ -1059,6 +1089,47 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertTrue(flag.didChange)
     }
 
+    func testSetVolumeNotifiesObserversOnlyWhenValueChanges() {
+        let store = LibraryStore(volume: 0.5)
+
+        let flag = ObservationChangeFlag()
+        withObservationTracking {
+            _ = store.volume
+        } onChange: {
+            flag.mark()
+        }
+
+        store.setVolume(toProgress: 0.5)
+        XCTAssertFalse(flag.didChange, "an unchanged volume must not fire @Observable invalidation on every slider tick (F14)")
+
+        store.setVolume(toProgress: 0.6)
+        XCTAssertTrue(flag.didChange)
+    }
+
+    func testSetDrumMixBoostDBNotifiesObserversOnlyWhenValueChanges() {
+        let track = BackbeatTrack(
+            title: "Boost",
+            duration: 100,
+            status: .ready,
+            sourceURL: URL(fileURLWithPath: "/tmp/boost.m4a"),
+            drumMixSettings: DrumMixSettings(boostDB: 4)
+        )
+        let store = LibraryStore(tracks: [track], selectedTrackID: track.id)
+
+        let flag = ObservationChangeFlag()
+        withObservationTracking {
+            _ = store.tracks
+        } onChange: {
+            flag.mark()
+        }
+
+        store.setDrumMixBoostDB(4, for: track.id)
+        XCTAssertFalse(flag.didChange, "an unchanged drum boost must not fire @Observable invalidation on every slider tick (F14)")
+
+        store.setDrumMixBoostDB(6, for: track.id)
+        XCTAssertTrue(flag.didChange)
+    }
+
     func testSetVolumeClampsProgress() {
         let store = LibraryStore(volume: 0.8)
 
@@ -1092,6 +1163,172 @@ final class LibraryStoreTests: XCTestCase {
                 )
             ]
         )
+    }
+
+    func testRecoverMissingRenderFilesRevertsReadyTrackAndDropsDanglingRecord() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-recover-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let drumsURL = root.appendingPathComponent("drums.m4a")
+        let drumlessURL = root.appendingPathComponent("drumless.m4a")
+        try Data("drums".utf8).write(to: drumsURL)
+        // drumless is intentionally never written — it "vanished" from disk.
+
+        let track = BackbeatTrack(
+            title: "Deleted Render",
+            duration: 100,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("source.m4a"),
+            activeRenders: [
+                .drums: RenderRecord(variant: .drums, fileURL: drumsURL, boostDB: 0),
+                .drumless: RenderRecord(variant: .drumless, fileURL: drumlessURL, boostDB: 0)
+            ]
+        )
+        let store = LibraryStore(tracks: [track], selectedTrackID: track.id)
+
+        XCTAssertTrue(store.recoverMissingRenderFiles(for: track.id))
+
+        let recovered = try XCTUnwrap(store.track(id: track.id))
+        XCTAssertEqual(recovered.status, .imported, "a ready track that lost a render file must revert so the scan re-renders it")
+        XCTAssertNil(recovered.activeRender(for: .drumless), "the dangling record must be dropped")
+        XCTAssertNotNil(recovered.activeRender(for: .drums), "a render whose file still exists is kept")
+    }
+
+    func testRecoverMissingRenderFilesIsNoOpWhenAllFilesExist() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-recover-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let drumsURL = root.appendingPathComponent("drums.m4a")
+        let drumlessURL = root.appendingPathComponent("drumless.m4a")
+        try Data("drums".utf8).write(to: drumsURL)
+        try Data("drumless".utf8).write(to: drumlessURL)
+
+        let track = BackbeatTrack(
+            title: "Intact",
+            duration: 100,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("source.m4a"),
+            activeRenders: [
+                .drums: RenderRecord(variant: .drums, fileURL: drumsURL, boostDB: 0),
+                .drumless: RenderRecord(variant: .drumless, fileURL: drumlessURL, boostDB: 0)
+            ]
+        )
+        let store = LibraryStore(tracks: [track], selectedTrackID: track.id)
+
+        XCTAssertFalse(store.recoverMissingRenderFiles(for: track.id))
+        XCTAssertEqual(store.track(id: track.id)?.status, .ready)
+        XCTAssertNotNil(store.track(id: track.id)?.activeRender(for: .drums))
+        XCTAssertNotNil(store.track(id: track.id)?.activeRender(for: .drumless))
+    }
+
+    // MARK: - applyDurationBackfill (Phase A launch sweep)
+
+    private func legacyPendingTrack(title: String = "Legacy", duration: TimeInterval = 200) -> BackbeatTrack {
+        // Constructed directly (not via importTrack, which marks new imports
+        // resolved) so isDurationResolved starts false, like a pre-F1 track.
+        BackbeatTrack(
+            title: title,
+            duration: duration,
+            status: .imported,
+            sourceURL: URL(fileURLWithPath: "/tmp/\(title).m4a")
+        )
+    }
+
+    func testApplyDurationBackfillKeptEstimateMarksResolvedWithoutChangingDuration() throws {
+        let track = legacyPendingTrack()
+        let store = LibraryStore(tracks: [track], selectedTrackID: track.id)
+
+        XCTAssertTrue(store.applyDurationBackfill(id: track.id, outcome: .keptEstimate))
+
+        let updated = try XCTUnwrap(store.track(id: track.id))
+        XCTAssertTrue(updated.isDurationResolved)
+        XCTAssertEqual(updated.duration, 200)
+    }
+
+    func testApplyDurationBackfillUpdatedMutatesDurationAndMarksResolved() throws {
+        let track = legacyPendingTrack()
+        let store = LibraryStore(tracks: [track], selectedTrackID: track.id)
+
+        XCTAssertTrue(store.applyDurationBackfill(id: track.id, outcome: .updated(215.4)))
+
+        let updated = try XCTUnwrap(store.track(id: track.id))
+        XCTAssertEqual(updated.duration, 215.4)
+        XCTAssertTrue(updated.isDurationResolved)
+    }
+
+    func testApplyDurationBackfillUpdatedOnNowPlayingAndPlayingTrackStaysPending() throws {
+        let track = legacyPendingTrack(title: "Live")
+        let store = LibraryStore(
+            tracks: [track],
+            selectedTrackID: track.id,
+            nowPlayingTrackID: track.id,
+            isPlaybackPlaying: true
+        )
+
+        XCTAssertFalse(store.applyDurationBackfill(id: track.id, outcome: .updated(215.4)))
+
+        let unchanged = try XCTUnwrap(store.track(id: track.id))
+        XCTAssertEqual(unchanged.duration, 200, "the live transport scale must not be mutated mid-playback")
+        XCTAssertFalse(unchanged.isDurationResolved, "must stay pending so it heals on the next launch")
+    }
+
+    func testApplyDurationBackfillUpdatedAppliesWhileADifferentTrackIsPlaying() throws {
+        let pending = legacyPendingTrack(title: "Pending")
+        let playing = legacyPendingTrack(title: "Playing")
+        let store = LibraryStore(
+            tracks: [pending, playing],
+            selectedTrackID: pending.id,
+            nowPlayingTrackID: playing.id,
+            isPlaybackPlaying: true
+        )
+
+        XCTAssertTrue(store.applyDurationBackfill(id: pending.id, outcome: .updated(215.4)))
+
+        let updated = try XCTUnwrap(store.track(id: pending.id))
+        XCTAssertEqual(updated.duration, 215.4)
+        XCTAssertTrue(
+            updated.isDurationResolved,
+            "the skip is per-track (nowPlayingTrackID == id), not global — playback of another track must not defer this track's heal"
+        )
+    }
+
+    func testApplyDurationBackfillUpdatedOnNowPlayingButPausedTrackApplies() throws {
+        let track = legacyPendingTrack(title: "Paused")
+        let store = LibraryStore(
+            tracks: [track],
+            selectedTrackID: track.id,
+            nowPlayingTrackID: track.id,
+            isPlaybackPlaying: false
+        )
+
+        XCTAssertTrue(store.applyDurationBackfill(id: track.id, outcome: .updated(215.4)))
+
+        let updated = try XCTUnwrap(store.track(id: track.id))
+        XCTAssertEqual(updated.duration, 215.4)
+        XCTAssertTrue(updated.isDurationResolved)
+    }
+
+    func testApplyDurationBackfillUnknownIDReturnsFalse() {
+        let store = LibraryStore()
+        XCTAssertFalse(store.applyDurationBackfill(id: UUID(), outcome: .keptEstimate))
+    }
+
+    func testApplyDurationBackfillUpdatedWithinToleranceMarksResolvedWithoutMutatingDuration() throws {
+        let track = legacyPendingTrack(title: "CloseEnough")
+        let store = LibraryStore(tracks: [track], selectedTrackID: track.id)
+
+        // The service already thresholds updated vs. keptEstimate; this
+        // exercises the store's own defensive no-op guard (F14) in case an
+        // `.updated` with a sub-tolerance delta is ever passed through.
+        XCTAssertTrue(store.applyDurationBackfill(id: track.id, outcome: .updated(200.02)))
+
+        let updated = try XCTUnwrap(store.track(id: track.id))
+        XCTAssertEqual(updated.duration, 200, "a sub-tolerance updated(...) must not perturb the persisted duration")
+        XCTAssertTrue(updated.isDurationResolved)
     }
 }
 

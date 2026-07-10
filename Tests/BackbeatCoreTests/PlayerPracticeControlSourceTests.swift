@@ -51,6 +51,17 @@ final class PlayerPracticeControlSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("accessibilityLabel(\"Faster\")"))
     }
 
+    func testMarkerButtonsCaptureFromTheEngineNotThePolledStore() throws {
+        let source = try readSource("Sources/Backbeat/Views/PracticeControlsView.swift")
+
+        XCTAssertTrue(source.contains("playback.capturePracticeLoopStart(track: track, store: store)"))
+        XCTAssertTrue(source.contains("playback.capturePracticeLoopEnd(track: track, store: store)"))
+        XCTAssertFalse(
+            source.contains("setPracticeLoopStart(store.playbackElapsed"),
+            "Marker capture must read the engine's live position, not the poll-stale store elapsed."
+        )
+    }
+
     func testLoopTimelineExposesWaveformAndDraggableABMarkers() throws {
         let source = try readSource("Sources/Backbeat/Views/LoopTimelineView.swift")
 

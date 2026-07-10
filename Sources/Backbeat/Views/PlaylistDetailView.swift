@@ -179,7 +179,9 @@ struct PlaylistDetailView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Add Tracks")
                 .font(.system(size: 24, weight: .black))
-            List(store.tracks) { track in
+            // The picker mirrors the library's persisted sort so it never
+            // contradicts the order the user just saw in the library view.
+            List(LibraryTrackQuery.visibleTracks(in: store.tracks, sort: store.librarySortOrder, searchText: "")) { track in
                 Button {
                     toggleSelection(track.id)
                 } label: {

@@ -40,7 +40,13 @@ struct BackbeatRootView: View {
     @State private var dropRejectedMessage: String?
     @State private var isDropTargeted = false
     @State private var loudnessAnalysisTask: Task<Void, Never>?
+    @State private var durationBackfillTask: Task<Void, Never>?
     @State private var pendingLibrarySave: Task<Void, Never>?
+    // @State (not `let`) so the pipeline's chain instance survives view
+    // re-init exactly as the former @State importChain did.
+    @State private var pipeline: TrackImportPipeline
+    @State private var librarySaveFailureCount = 0
+    @State private var librarySaveFailureMessage: String?
 
     @MainActor
     init(
@@ -53,7 +59,18 @@ struct BackbeatRootView: View {
         self.libraryWriter = libraryWriter ?? LibrarySnapshotWriter(persistence: persistence)
         let resolvedStore = store ?? persistence.loadStoreOrDefault()
         _store = State(initialValue: resolvedStore)
-        self.renderQueue = renderQueue ?? RenderQueueCoordinator(store: resolvedStore)
+        let resolvedRenderQueue = renderQueue ?? RenderQueueCoordinator(store: resolvedStore)
+        self.renderQueue = resolvedRenderQueue
+        _pipeline = State(initialValue: TrackImportPipeline(
+            store: resolvedStore,
+            renderQueue: resolvedRenderQueue,
+            artworkFallback: { url in
+                // Music-drag imports byte-copy the raw library file, whose artwork
+                // lives in Music's database, not the file — the iTunesLibrary lookup
+                // stays app-side behind this seam (D-087).
+                await MusicLibraryArtworkProvider().artworkData(forFileAt: url)
+            }
+        ))
     }
 
     var body: some View {
@@ -102,9 +119,13 @@ struct BackbeatRootView: View {
             MusicDropShim(
                 onTargeted: { isDropTargeted = $0 },
                 onImport: { urls in
-                    // Music drags import the raw library file, whose artwork
-                    // lives in Music's database — allow the library lookup.
-                    await importAudioFilesNow(urls, managesSecurityScope: false, musicLibraryArtwork: true)
+                    // Music drags import the raw library file, whose artwork lives
+                    // in Music's database — enable the pipeline's artwork fallback.
+                    // Await through the shared import chain so the promise scratch
+                    // directory outlives the copy into the managed library, and a
+                    // concurrent Finder drop can't race dedupe.
+                    let report = await pipeline.enqueue(urls: urls, managesSecurityScope: false, useArtworkFallback: true).value
+                    presentImportReport(report)
                 },
                 onReject: { message in
                     dropRejectedMessage = message
@@ -148,6 +169,13 @@ struct BackbeatRootView: View {
         } message: {
             Text(store.libraryLoadRecoveryMessage ?? "")
         }
+        .alert("Couldn't save your library", isPresented: librarySaveFailureBinding) {
+            Button("OK", role: .cancel) {
+                librarySaveFailureMessage = nil
+            }
+        } message: {
+            Text(librarySaveFailureMessage ?? "")
+        }
         .onChange(of: persistenceSnapshot) { _, newSnapshot in
             scheduleLibrarySave(newSnapshot)
         }
@@ -156,7 +184,18 @@ struct BackbeatRootView: View {
                 playback.resetPracticePlayback(store: store)
             }
         }
+        .onChange(of: store.playbackNormalizationSettings.isEnabled) { _, _ in
+            // The Normalize toggle lives in the separate Settings scene and can't
+            // reach the playing engines; re-apply gain here so the change reaches
+            // live playback immediately instead of deferring to the next touch (F4).
+            playback.applyOutputGain(store: store)
+        }
         .task {
+            // Per-file loudness cadence: each committed import re-triggers the
+            // sweep immediately — batch-end triggering would be a silent behavior
+            // change. Assigned here (post-install) rather than in init so the
+            // closure captures the installed @State, and before any drop can land.
+            pipeline.onTrackCommitted = { _ in analyzeMissingLoudnessProfiles() }
             // Loudness analysis is independent of the separation model; start it up front.
             // The htdemucs checkpoint ships in the app bundle, so rendering is always
             // available — enqueue any missing renders unconditionally. One-time: purge the
@@ -164,8 +203,17 @@ struct BackbeatRootView: View {
             // vendored port's stale v1/v2 conversion caches (fail-soft, off the main
             // actor); the custom engine's live v3 cache is kept.
             analyzeMissingLoudnessProfiles()
+            backfillImpreciseDurations()
             Task.detached(priority: .utility) { LegacyWeightsCleanup.purgeLegacyArtifacts() }
             renderQueue.enqueueMissingRenders()
+        }
+        .onDisappear {
+            // The callback closure captures this view struct, whose @State
+            // wrapper holds the pipeline — a retain cycle while assigned.
+            // Clearing on disappear breaks it when the window closes (imports
+            // can't start without the window); the .task above re-wires it on
+            // every appearance.
+            pipeline.onTrackCommitted = nil
         }
     }
 
@@ -184,7 +232,7 @@ struct BackbeatRootView: View {
                 route: $route,
                 onImportTrack: { presentImporter(.track) },
                 onImportFolder: { presentImporter(.folder) },
-                onDeleteTrack: deleteTrack
+                onDeleteTracks: deleteTracks
             )
         case .player:
             PlayerView(store: store, playback: playback, renderQueue: renderQueue, route: $route)
@@ -226,6 +274,13 @@ struct BackbeatRootView: View {
         )
     }
 
+    private var librarySaveFailureBinding: Binding<Bool> {
+        Binding(
+            get: { librarySaveFailureMessage != nil },
+            set: { if !$0 { librarySaveFailureMessage = nil } }
+        )
+    }
+
     private func presentImporter(_ importer: BackbeatImporter) {
         activeImporter = importer
         isImporterPresented = true
@@ -247,125 +302,32 @@ struct BackbeatRootView: View {
     }
 
     private func importAudioFolder(_ folderURL: URL) {
-        Task {
-            let didAccess = folderURL.startAccessingSecurityScopedResource()
-            defer {
-                if didAccess {
-                    folderURL.stopAccessingSecurityScopedResource()
-                }
-            }
-
-            do {
-                let contents = try FileManager.default.contentsOfDirectory(
-                    at: folderURL,
-                    includingPropertiesForKeys: [.isRegularFileKey],
-                    options: [.skipsHiddenFiles]
-                )
-                let audioURLs = AudioImportFilter.audioFileURLs(from: contents)
-                await importAudioFilesNow(audioURLs, managesSecurityScope: false, musicLibraryArtwork: false)
-            } catch {
-                await MainActor.run {
-                    importErrorMessage = error.localizedDescription
-                }
-            }
+        let batch = pipeline.enqueueFolder(folderURL)
+        Task { @MainActor in
+            presentImportReport(await batch.value)
         }
     }
 
+    // `musicLibraryArtwork` maps to the pipeline's provider-neutral
+    // `useArtworkFallback` — the D-087 vocabulary stays app-side.
     private func importAudioFiles(_ urls: [URL], managesSecurityScope: Bool, musicLibraryArtwork: Bool) {
-        Task {
-            await importAudioFilesNow(urls, managesSecurityScope: managesSecurityScope, musicLibraryArtwork: musicLibraryArtwork)
+        let batch = pipeline.enqueue(urls: urls, managesSecurityScope: managesSecurityScope, useArtworkFallback: musicLibraryArtwork)
+        Task { @MainActor in
+            presentImportReport(await batch.value)
         }
     }
 
-    /// Shared import loop. Completes only after every file is imported (or
-    /// skipped), so callers holding short-lived source files — like the
-    /// Music drop shim's promise scratch directory — can clean up safely
-    /// after awaiting it. Duplicates are skipped and reported in one warning.
-    /// `musicLibraryArtwork` is true only for Music-drag imports: it allows
-    /// the Music-library artwork lookup, whose first use triggers the
-    /// "Media & Apple Music" consent prompt (D-087) — a prompt Finder and
-    /// panel imports must never raise.
-    private func importAudioFilesNow(_ urls: [URL], managesSecurityScope: Bool, musicLibraryArtwork: Bool) async {
-        var skippedDuplicates: [String] = []
-        do {
-            for url in urls {
-                if let existingTitle = try await importAudioFile(url, managesSecurityScope: managesSecurityScope, musicLibraryArtwork: musicLibraryArtwork) {
-                    skippedDuplicates.append(existingTitle)
-                }
-            }
-        } catch {
-            await MainActor.run {
-                importErrorMessage = error.localizedDescription
-            }
+    // The alert bindings present on any non-nil value, so these emptiness
+    // guards are load-bearing — unguarded writes would pop a spurious empty
+    // alert after every clean import.
+    private func presentImportReport(_ report: ImportBatchReport) {
+        if !report.failureDescriptions.isEmpty {
+            importErrorMessage = report.failureDescriptions.joined(separator: "\n")
         }
-        if !skippedDuplicates.isEmpty {
-            let titles = skippedDuplicates.joined(separator: "\n")
-            await MainActor.run {
-                duplicateWarningMessage = "Skipped — these tracks are already in your library:\n\(titles)"
-            }
+        if !report.skippedDuplicateTitles.isEmpty {
+            let titles = report.skippedDuplicateTitles.joined(separator: "\n")
+            duplicateWarningMessage = "Skipped — these tracks are already in your library:\n\(titles)"
         }
-    }
-
-    /// Imports one file, or returns the existing track's title when the file
-    /// is byte-identical to an original the library already stores.
-    private func importAudioFile(_ url: URL, managesSecurityScope: Bool, musicLibraryArtwork: Bool) async throws -> String? {
-        let didAccess = managesSecurityScope && url.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess {
-                url.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        DebugLog.importing.notice("import.start file=\(url.lastPathComponent, privacy: .public) ext=\(url.pathExtension, privacy: .public) managesScope=\(managesSecurityScope) accessGranted=\(didAccess)")
-
-        let storedSources = await MainActor.run {
-            store.tracks.map { (title: $0.title, sourceURL: $0.sourceURL) }
-        }
-        if let match = DuplicateTrackDetector().existingDuplicate(
-            of: url,
-            among: storedSources.map(\.sourceURL)
-        ) {
-            let existingTitle = storedSources.first { $0.sourceURL == match }?.title
-            DebugLog.importing.notice("import.duplicate title=\(existingTitle ?? "?", privacy: .public)")
-            return existingTitle ?? url.deletingPathExtension().lastPathComponent
-        }
-
-        let metadata = try await AudioMetadataReader().read(url: url)
-        DebugLog.importing.notice("import.metadata title=\(metadata.resolvedTitle, privacy: .public) artworkBytes=\(metadata.artworkData?.count ?? 0)")
-        var artworkData = metadata.artworkData
-        var artworkSource = artworkData == nil ? "none" : "embedded"
-        if artworkData == nil && musicLibraryArtwork {
-            // Music-drag imports byte-copy the raw library file, whose
-            // artwork lives in Music's database, not the file (D-087).
-            artworkData = await MusicLibraryArtworkProvider().artworkData(forFileAt: url)
-            if artworkData != nil {
-                artworkSource = "musiclibrary"
-            }
-        }
-        let managedURL = try ManagedAudioLibrary().storeSourceFile(url)
-        let trackID = UUID()
-        // Metadata carries no artwork type info; the store sniffs magic bytes.
-        let artworkURL = try AudioArtworkStore().storeArtwork(
-            artworkData,
-            contentType: nil,
-            trackID: trackID
-        )
-        DebugLog.importing.notice("import.artwork stored=\(artworkURL != nil) source=\(artworkSource, privacy: .public) file=\(artworkURL?.lastPathComponent ?? "none", privacy: .public)")
-        await MainActor.run {
-            // The track is playable as Original immediately; the background
-            // queue renders Drums/Drumless one track at a time.
-            let track = store.importTrack(
-                id: trackID,
-                from: metadata,
-                sourceURL: managedURL,
-                artworkURL: artworkURL
-            )
-            // The separation model is bundled, so a render can start immediately.
-            renderQueue.enqueue(track.id)
-            analyzeMissingLoudnessProfiles()
-            DebugLog.importing.notice("import.done trackID=\(trackID.uuidString, privacy: .public) title=\(track.title, privacy: .public) hasArtwork=\(artworkURL != nil)")
-        }
-        return nil
     }
 
     @MainActor
@@ -384,7 +346,10 @@ struct BackbeatRootView: View {
                 guard !Task.isCancelled else { return }
                 do {
                     let profile = try await analyzer.analyze(sourceURL: track.sourceURL)
-                    guard !Task.isCancelled else { return }
+                    // Commit the finished profile even if a newer import cancelled
+                    // this task mid-batch — discarding it here forced a duplicate
+                    // full-file decode on the next pass (F15). The pre-analyze
+                    // guard above still skips starting work once cancelled.
                     store.setLoudnessProfile(profile, for: track.id)
                     persistLibrary()
                 } catch {
@@ -394,15 +359,55 @@ struct BackbeatRootView: View {
         }
     }
 
-    private func deleteTrack(_ track: BackbeatTrack) throws {
-        // Cancel first so an in-flight render job is cancelled and its
-        // completion handler sees the track gone.
-        renderQueue.cancel(track.id)
-        if store.nowPlayingTrackID == track.id {
-            playback.stopRender(track: track, store: store)
+    // Launch-once: new imports are born resolved (isDurationResolved: true),
+    // so only pre-F1 tracks are ever pending, and a quit mid-sweep just
+    // leaves them pending for the next launch — safe to cancel and retry.
+    @MainActor
+    private func backfillImpreciseDurations() {
+        durationBackfillTask?.cancel()
+        let pendingItems = store.tracks.filter { !$0.isDurationResolved }.map { track in
+            TrackDurationBackfill.Item(
+                trackID: track.id,
+                sourceURL: track.sourceURL,
+                currentDuration: track.duration
+            )
         }
-        try store.deleteTrack(id: track.id)
+        guard !pendingItems.isEmpty else { return }
+
+        durationBackfillTask = Task { @MainActor in
+            await TrackDurationBackfill().run(
+                items: pendingItems,
+                probe: { url in try await AudioMetadataReader().preciseDuration(url: url) },
+                onResolve: { trackID, outcome in
+                    guard store.applyDurationBackfill(id: trackID, outcome: outcome) else { return }
+                    persistLibrary()
+                }
+            )
+        }
+    }
+
+    private func deleteTracks(_ tracksToDelete: [BackbeatTrack]) throws {
+        // Best effort across the batch: one failed removal must not strand
+        // the remaining deletions; the first error is rethrown after every
+        // track was attempted (the deleteFiles convention).
+        var firstError: Error?
+        for track in tracksToDelete {
+            // Cancel first so an in-flight render job is cancelled and its
+            // completion handler sees the track gone.
+            renderQueue.cancel(track.id)
+            if store.nowPlayingTrackID == track.id {
+                playback.stopRender(track: track, store: store)
+            }
+            do {
+                try store.deleteTrack(id: track.id)
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
         route = .library
+        if let firstError {
+            throw firstError
+        }
     }
 
     private func persistLibrary() {
@@ -416,7 +421,7 @@ struct BackbeatRootView: View {
         pendingLibrarySave?.cancel()
         let writer = libraryWriter
         let generation = writer.nextGeneration()
-        pendingLibrarySave = Task {
+        pendingLibrarySave = Task { @MainActor in
             do {
                 try await Task.sleep(for: .milliseconds(500))
             } catch {
@@ -426,8 +431,16 @@ struct BackbeatRootView: View {
                 try await Task.detached(priority: .utility) {
                     try writer.write(snapshot, generation: generation)
                 }.value
+                librarySaveFailureCount = 0
             } catch {
-                print("Backbeat library save failed: \(error.localizedDescription)")
+                // A persistent failure (disk full / permissions) silently lost
+                // every change before this; log it and, after a few consecutive
+                // failures, tell the user rather than only print()ing (F12).
+                DebugLog.persistence.error("library.save.debounced.failed generation=\(generation) error=\(error.localizedDescription, privacy: .public)")
+                librarySaveFailureCount += 1
+                if librarySaveFailureCount >= 3, librarySaveFailureMessage == nil {
+                    librarySaveFailureMessage = "Backline Boost hasn't been able to save your library for the last \(librarySaveFailureCount) changes (\(error.localizedDescription)). Check that the disk isn't full and that you can write to the app's Application Support folder."
+                }
             }
         }
     }

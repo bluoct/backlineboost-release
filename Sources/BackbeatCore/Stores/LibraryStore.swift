@@ -32,6 +32,9 @@ public final class LibraryStore {
     public var isTracksSectionCollapsed: Bool
     public var isPlaylistOverflowExpanded: Bool
     public var isTracksOverflowExpanded: Bool
+    // Library display order (D-102). A durable view preference like the
+    // sidebar chrome above, so it persists.
+    public var librarySortOrder: LibrarySortOrder
 
     public init(
         tracks: [BackbeatTrack] = [],
@@ -53,7 +56,8 @@ public final class LibraryStore {
         isPlaylistsSectionCollapsed: Bool = false,
         isTracksSectionCollapsed: Bool = false,
         isPlaylistOverflowExpanded: Bool = false,
-        isTracksOverflowExpanded: Bool = false
+        isTracksOverflowExpanded: Bool = false,
+        librarySortOrder: LibrarySortOrder = .default
     ) {
         self.tracks = tracks
         self.selectedTrackID = selectedTrackID
@@ -81,6 +85,12 @@ public final class LibraryStore {
         self.isTracksSectionCollapsed = isTracksSectionCollapsed
         self.isPlaylistOverflowExpanded = isPlaylistOverflowExpanded
         self.isTracksOverflowExpanded = isTracksOverflowExpanded
+        self.librarySortOrder = librarySortOrder
+    }
+
+    public func setLibrarySortOrder(_ order: LibrarySortOrder) {
+        guard librarySortOrder != order else { return }
+        librarySortOrder = order
     }
 
     public var selectedTrack: BackbeatTrack? {
@@ -151,7 +161,8 @@ public final class LibraryStore {
         id: BackbeatTrack.ID = UUID(),
         from metadata: AudioMetadata,
         sourceURL: URL,
-        artworkURL: URL? = nil
+        artworkURL: URL? = nil,
+        dateAdded: Date = Date()
     ) -> BackbeatTrack {
         let track = BackbeatTrack(
             id: id,
@@ -161,7 +172,11 @@ public final class LibraryStore {
             duration: metadata.duration,
             status: .imported,
             sourceURL: sourceURL,
-            artworkURL: artworkURL
+            artworkURL: artworkURL,
+            // New imports already read precise duration; only pre-existing
+            // library entries are pending the launch backfill sweep.
+            isDurationResolved: true,
+            dateAdded: dateAdded
         )
         tracks.append(track)
         selectedTrackID = track.id
@@ -356,6 +371,44 @@ public final class LibraryStore {
         return firstTrack
     }
 
+    /// Starts a queue over the library's visible order (the D-102 hybrid
+    /// double-click). `playlistID` stays nil, so playlist teardown
+    /// (`deletePlaylist`) and playlist-order un-shuffle never apply; the
+    /// caller passes the exact filtered+sorted IDs it is displaying and the
+    /// queue snapshots them — clearing the search later does not widen it.
+    @discardableResult
+    public func startLibraryQueue(
+        _ trackIDs: [BackbeatTrack.ID],
+        startingAt startingTrackID: BackbeatTrack.ID,
+        restart: Bool = true
+    ) -> BackbeatTrack? {
+        let playableTrackIDs = trackIDs.filter { track(id: $0) != nil }
+        guard !playableTrackIDs.isEmpty else {
+            playbackErrorMessage = "No playable tracks."
+            return nil
+        }
+        guard let startIndex = playableTrackIDs.firstIndex(of: startingTrackID),
+              let firstTrack = track(id: playableTrackIDs[startIndex]) else {
+            playbackErrorMessage = "Track is not in the current list."
+            return nil
+        }
+        resetPracticeState()
+        activeQueue = PlaybackQueue(
+            playlistID: nil,
+            trackIDs: playableTrackIDs,
+            currentIndex: startIndex,
+            preferredSource: .drumBoost
+        )
+        selectedTrackID = firstTrack.id
+        nowPlayingTrackID = firstTrack.id
+        nowPlayingPlaybackSource = .drumBoost
+        if restart {
+            setPlaybackElapsed(0, duration: firstTrack.duration)
+        }
+        playbackErrorMessage = nil
+        return firstTrack
+    }
+
     @discardableResult
     public func startSingleTrackQueue(
         _ trackID: BackbeatTrack.ID,
@@ -499,6 +552,22 @@ public final class LibraryStore {
             } else {
                 queue.currentIndex = min(queue.currentIndex, max(0, queue.trackIDs.count - 1))
             }
+        } else {
+            // Library (and orphaned-playlist) queues have no playlist order to
+            // restore; the persisted sort is their canonical order. Without
+            // this branch, un-shuffle is a silent no-op for nil-playlistID
+            // queues and the shuffled order is stranded permanently.
+            let queuedIDs = Set(queue.trackIDs)
+            queue.trackIDs = LibraryTrackQuery.visibleTracks(
+                in: tracks.filter { queuedIDs.contains($0.id) },
+                sort: librarySortOrder,
+                searchText: ""
+            ).map(\.id)
+            if let currentTrackID, let restoredIndex = queue.trackIDs.firstIndex(of: currentTrackID) {
+                queue.currentIndex = restoredIndex
+            } else {
+                queue.currentIndex = min(queue.currentIndex, max(0, queue.trackIDs.count - 1))
+            }
         }
 
         activeQueue = queue
@@ -522,6 +591,29 @@ public final class LibraryStore {
     public func revertRenderingToImported(for id: BackbeatTrack.ID) {
         guard let index = tracks.firstIndex(where: { $0.id == id }), tracks[index].status == .rendering else { return }
         tracks[index].status = .imported
+    }
+
+    /// Recovers a track whose recorded render files were deleted on disk. Such a
+    /// `.ready` track is otherwise stuck forever — resolution hands back a
+    /// dangling URL and playback surfaces a raw Foundation error with no path to
+    /// re-render (F7). Drops any render whose file is gone and, if that leaves a
+    /// `.ready` track without its renders, reverts it to `.imported` so the
+    /// launch/enqueue scan re-renders it and playback falls back to Original.
+    /// Returns true when it changed state.
+    @discardableResult
+    public func recoverMissingRenderFiles(for id: BackbeatTrack.ID) -> Bool {
+        guard let index = tracks.firstIndex(where: { $0.id == id }) else { return false }
+        let missingVariants = tracks[index].activeRenders.compactMap { variant, record in
+            FileManager.default.fileExists(atPath: record.fileURL.path) ? nil : variant
+        }
+        guard !missingVariants.isEmpty else { return false }
+        for variant in missingVariants {
+            tracks[index].removeRender(for: variant)
+        }
+        if tracks[index].status == .ready {
+            tracks[index].status = .imported
+        }
+        return true
     }
 
     /// Legacy single-file boosted-render completion. The current pipeline
@@ -609,7 +701,12 @@ public final class LibraryStore {
 
     public func setDrumMixBoostDB(_ boostDB: Double, for trackID: BackbeatTrack.ID) {
         guard let index = tracks.firstIndex(where: { $0.id == trackID }) else { return }
-        tracks[index].drumMixSettings = DrumMixSettings(boostDB: boostDB)
+        // Guard against unchanged writes so a slider drag doesn't fire @Observable
+        // invalidation app-wide ~60-120×/s when the value hasn't moved — matching
+        // the store's own equality-guard convention (setPlaybackElapsed) (F14).
+        let settings = DrumMixSettings(boostDB: boostDB)
+        guard tracks[index].drumMixSettings != settings else { return }
+        tracks[index].drumMixSettings = settings
     }
 
     public func setPlaybackNormalizationEnabled(_ isEnabled: Bool) {
@@ -619,6 +716,39 @@ public final class LibraryStore {
     public func setLoudnessProfile(_ profile: TrackLoudnessProfile, for trackID: BackbeatTrack.ID) {
         guard let index = tracks.firstIndex(where: { $0.id == trackID }) else { return }
         tracks[index].loudnessProfile = profile
+    }
+
+    /// Applies one `TrackDurationBackfill` resolution (Phase A launch sweep).
+    /// Single MainActor entry point so the sweep never touches `tracks`
+    /// directly. Returns true when it changed state, so the caller can skip a
+    /// persist cycle on a no-op apply (F14 no-op-guard convention).
+    @discardableResult
+    public func applyDurationBackfill(id: BackbeatTrack.ID, outcome: TrackDurationBackfill.Outcome) -> Bool {
+        guard let index = tracks.firstIndex(where: { $0.id == id }) else { return false }
+        switch outcome {
+        case .keptEstimate:
+            tracks[index].isDurationResolved = true
+            return true
+        case .updated(let duration):
+            // The now-playing AND currently-playing track's live transport
+            // scale comes from the engine's file-derived duration, not
+            // `track.duration` (A1) — but this conjunct still matters:
+            // `nowPlayingTrackID` is persisted and restored at launch with
+            // `isPlaybackPlaying: false`, so a bare id check would
+            // permanently skip the user's last-played track on every launch.
+            // Leave it pending here; it heals on the next launch's sweep.
+            if nowPlayingTrackID == id && isPlaybackPlaying {
+                return false
+            }
+            // The service already thresholds `updated` vs `keptEstimate`;
+            // this guard is defense against a caller passing an `updated`
+            // whose value happens to match what's already persisted (F14).
+            if abs(tracks[index].duration - duration) > 0.05 {
+                tracks[index].duration = duration
+            }
+            tracks[index].isDurationResolved = true
+            return true
+        }
     }
 
     public func setPracticeSpeed(_ speed: Double) {
@@ -718,7 +848,9 @@ public final class LibraryStore {
     }
 
     public func setVolume(toProgress progress: Double) {
-        volume = min(1, max(0, progress))
+        let clamped = min(1, max(0, progress))
+        guard volume != clamped else { return }
+        volume = clamped
     }
 
     public func setPlaybackPlaying(_ isPlaying: Bool) {

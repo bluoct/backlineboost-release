@@ -26,8 +26,38 @@ final class TrackRowActionsSourceTests: XCTestCase {
 
         XCTAssertTrue(source.contains("TapGesture(count: 2)"))
         XCTAssertTrue(source.contains(".exclusively(before: TapGesture(count: 1))"))
-        XCTAssertTrue(source.contains("playFromStart(track)"))
+        XCTAssertTrue(source.contains("playFromStart(track, queueing: visibleTrackIDs)"))
         XCTAssertTrue(source.contains("open(track)"))
+    }
+
+    func testPlayFromStartAnchorsTheLibraryQueueOnlyWhenNoPlaylistQueueIsActive() throws {
+        let source = try readSource("Sources/Backbeat/Views/TrackRowActions.swift")
+
+        // The D-102 hybrid gate: nil queue OR a non-playlist queue anchors
+        // the visible-order library queue; an active playlist queue falls
+        // through to the interleave path.
+        XCTAssertTrue(source.contains("if store.activeQueue?.playlistID == nil {"))
+        XCTAssertTrue(source.contains("store.startLibraryQueue(visibleTrackIDs, startingAt: track.id)"))
+        XCTAssertTrue(
+            source.contains("source: store.activeQueue?.preferredSource ?? store.nowPlayingPlaybackSource"),
+            "The library-queue start must mirror PlaylistDetailView.playPlaylist's source resolution."
+        )
+        // The interleave path is owner-sacred: playFromStart must never
+        // mutate the queue directly — the only queue write allowed here is
+        // startLibraryQueue behind the playlist gate.
+        XCTAssertFalse(
+            source.contains("store.activeQueue ="),
+            "TrackRowActions must never assign the queue directly; the playlist interleave depends on the queue surviving one-off plays."
+        )
+        XCTAssertFalse(
+            source.contains("startSingleTrackQueue"),
+            "Double-click must not collapse the queue to a single track."
+        )
+        // A failed hybrid start means the library mutated under the click:
+        // a vanished track must not fall through to playing a dead file, and
+        // a recoverable fallthrough must not strand the queue-start error.
+        XCTAssertTrue(source.contains("guard store.track(id: track.id) != nil else { return }"))
+        XCTAssertTrue(source.contains("store.playbackErrorMessage = nil"))
     }
 
     private func readSource(_ relativePath: String) throws -> String {

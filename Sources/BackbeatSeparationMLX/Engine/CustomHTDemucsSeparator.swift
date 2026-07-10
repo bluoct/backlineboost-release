@@ -271,13 +271,7 @@ public actor CustomHTDemucsSeparator: StemSeparating {
 
             let clock = ContinuousClock()
             let start = clock.now
-            try await HTDemucsConversion.ensureCustomEngineConverted(
-                weightsURL: weightsURL, cacheDirectory: cacheDirectory)
-            try Task.checkCancellation()
-            let weights = try MLX.loadArrays(
-                url: cacheDirectory.appendingPathComponent("htdemucs.safetensors"))
-            try Task.checkCancellation()
-            let built = try CustomHTDemucsPipeline(model: try CustomHTDemucs(weights: weights))
+            let built = try await buildPipeline()
             pipeline = built
 
             let elapsed = clock.now - start
@@ -287,5 +281,36 @@ public actor CustomHTDemucsSeparator: StemSeparating {
                 "[custom] model_load_s=\(String(format: "%.2f", seconds))\n".utf8))
             return built
         }
+    }
+
+    /// Convert (if needed) → load → build, retrying once against a freshly
+    /// re-converted cache if the load or graph build fails. The cache-hit check
+    /// is a bare `fileExists` on `htdemucs.safetensors`, so a corrupt-but-present
+    /// file — post-write corruption, an MLX/schema drift — would otherwise fail
+    /// every render forever with no recovery but a manual delete (F10).
+    private func buildPipeline() async throws -> CustomHTDemucsPipeline {
+        do {
+            return try await convertLoadAndBuild()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // The cached weights passed the bare existence check but couldn't be
+            // loaded or built from; drop them and rebuild once from the bundled
+            // source weights. Rethrow if the rebuild fails too.
+            try? FileManager.default.removeItem(
+                at: cacheDirectory.appendingPathComponent("htdemucs.safetensors"))
+            try Task.checkCancellation()
+            return try await convertLoadAndBuild()
+        }
+    }
+
+    private func convertLoadAndBuild() async throws -> CustomHTDemucsPipeline {
+        try await HTDemucsConversion.ensureCustomEngineConverted(
+            weightsURL: weightsURL, cacheDirectory: cacheDirectory)
+        try Task.checkCancellation()
+        let weights = try MLX.loadArrays(
+            url: cacheDirectory.appendingPathComponent("htdemucs.safetensors"))
+        try Task.checkCancellation()
+        return try CustomHTDemucsPipeline(model: try CustomHTDemucs(weights: weights))
     }
 }

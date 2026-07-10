@@ -24,6 +24,21 @@ final class AudioPlaybackController {
     private var renderPlaybackBackend: RenderPlaybackBackend?
     private var timer: Timer?
     private var mode: PlaybackMode?
+    private weak var activeStore: LibraryStore?
+    private var activeTickAction: (@MainActor @Sendable () -> Void)?
+
+    init() {
+        // Route each engine's hardware-interruption signal (an AVAudioEngine
+        // configuration change — output-device or format change) back to the
+        // store so a device change reflects as paused instead of leaving the UI
+        // "playing" silence (F3). The engines own the AVFoundation observer; the
+        // controller stays AVFoundation-free.
+        let interrupt: @MainActor (TimeInterval) -> Void = { [weak self] elapsed in
+            self?.handlePlaybackInterrupted(elapsed: elapsed)
+        }
+        singleFileEngine.onPlaybackInterrupted = interrupt
+        twoTrackMixEngine.onPlaybackInterrupted = interrupt
+    }
 
     func toggleRender(track: BackbeatTrack, store: LibraryStore, source: RenderControlSource = .detail) {
         let playbackSource: PlaybackSource = source == .detail ? store.selectedPlaybackSource : store.nowPlayingPlaybackSource
@@ -37,6 +52,14 @@ final class AudioPlaybackController {
 
     func updateVolume(toProgress progress: Double, store: LibraryStore) {
         store.setVolume(toProgress: progress)
+        applyOutputGain(store: store)
+    }
+
+    /// Recomputes the normalization gain for the now-playing track and pushes it
+    /// into both engines. Called on a volume change and when the "Normalize
+    /// playback volume" setting toggles, so the change reaches live playback
+    /// immediately instead of deferring to the next play/seek/volume touch (F4).
+    func applyOutputGain(store: LibraryStore) {
         let normalizationGainDB = currentNormalizationGainDB(store: store)
         singleFileEngine.setOutputGain(volume: store.volume, normalizationGainDB: normalizationGainDB)
         twoTrackMixEngine.setOutputGain(volume: store.volume, normalizationGainDB: normalizationGainDB)
@@ -50,6 +73,24 @@ final class AudioPlaybackController {
         playTrack(track: track, store: store, source: store.nowPlayingPlaybackSource, startElapsed: 0)
     }
 
+    private func effectiveSectionLoop(store: LibraryStore) -> PracticeLoopRange? {
+        store.practiceLoopMode == .section ? store.practiceLoopRange : nil
+    }
+
+    // Stop only the engine we are NOT about to play — stopping the target
+    // would destroy the pre-scheduled loop chain the pause/resume contract
+    // preserves (D-094); the target engine's play() resumes or rebuilds
+    // internally.
+    private func prepareForPlayback(target: RenderPlaybackBackend) {
+        stopTimer()
+        switch target {
+        case .singleFile:
+            twoTrackMixEngine.stop()
+        case .twoTrackMix:
+            singleFileEngine.stop()
+        }
+    }
+
     func playTrack(
         track: BackbeatTrack,
         store: LibraryStore,
@@ -58,40 +99,51 @@ final class AudioPlaybackController {
     ) {
         guard let asset = store.playbackAsset(for: track, preferredSource: source) else { return }
         let resumeTime = startElapsed ?? (mode == .render(track.id) || store.nowPlayingTrackID == track.id ? store.playbackElapsed : 0)
-        let boundedResumeTime = min(max(0, resumeTime), track.duration)
+        let boundedResumeTime = min(max(0, resumeTime), transportDuration(for: track))
 
         if source == .drumBoost, let mixAsset = store.twoTrackMixAsset(for: track, preferredSource: .drumBoost) {
             playTwoTrackMix(track: track, asset: mixAsset, store: store, startElapsed: boundedResumeTime)
             return
         }
 
-        stopCurrent()
+        prepareForPlayback(target: .singleFile(track.id))
         mode = .render(track.id)
 
         do {
             try singleFileEngine.play(
                 asset: asset,
-                duration: track.duration,
                 startElapsed: boundedResumeTime,
                 volume: store.volume,
                 speed: store.practiceSpeed,
-                normalizationGainDB: store.normalizationGainDB(for: track)
+                normalizationGainDB: store.normalizationGainDB(for: track),
+                sectionLoop: effectiveSectionLoop(store: store)
             )
             renderPlaybackBackend = .singleFile(track.id)
+            activeStore = store
             store.nowPlayingTrackID = track.id
             store.setActiveQueueSource(source)
-            store.setPlaybackElapsed(boundedResumeTime, duration: track.duration)
+            store.setPlaybackElapsed(boundedResumeTime, duration: transportDuration(for: track))
             store.setPlaybackPlaying(true)
-            startTimer { [weak self, weak store, track] in
+            // One UI-progress cadence — A/B wrap enforcement lives in the
+            // engines' pre-scheduled chain now, D-094.
+            startTimer(interval: 0.2) { [weak self, weak store, track] in
                 guard let self, let store else { return }
                 self.tickRenderEngine(self.singleFileEngine, track: track, store: store)
             }
         } catch {
+            stopCurrent()
+            // A rendered file may have been deleted on disk; recover the dangling
+            // record and fall back to Original instead of dead-ending on a raw
+            // Foundation error (F7).
+            if source != .original, store.recoverMissingRenderFiles(for: track.id) {
+                playTrack(track: track, store: store, source: .original, startElapsed: boundedResumeTime)
+                return
+            }
             renderPlaybackBackend = nil
             mode = nil
             store.nowPlayingTrackID = track.id
             store.setActiveQueueSource(source)
-            store.setPlaybackElapsed(boundedResumeTime, duration: track.duration)
+            store.setPlaybackElapsed(boundedResumeTime, duration: transportDuration(for: track))
             store.setPlaybackPlaying(false)
             store.playbackErrorMessage = error.localizedDescription
         }
@@ -99,28 +151,42 @@ final class AudioPlaybackController {
 
     private func playTwoTrackMix(track: BackbeatTrack, asset: TwoTrackMixAsset, store: LibraryStore, startElapsed: TimeInterval) {
         do {
-            stopCurrent()
+            prepareForPlayback(target: .twoTrackMix(track.id))
             mode = .render(track.id)
             try twoTrackMixEngine.play(asset: asset,
                                        startElapsed: startElapsed,
                                        volume: store.volume,
                                        speed: store.practiceSpeed,
-                                       normalizationGainDB: store.normalizationGainDB(for: track))
+                                       normalizationGainDB: store.normalizationGainDB(for: track),
+                                       sectionLoop: effectiveSectionLoop(store: store))
             renderPlaybackBackend = .twoTrackMix(track.id)
+            activeStore = store
             store.nowPlayingTrackID = track.id
             store.setActiveQueueSource(.drumBoost)
-            store.setPlaybackElapsed(startElapsed, duration: track.duration)
+            store.setPlaybackElapsed(startElapsed, duration: transportDuration(for: track))
             store.setPlaybackPlaying(true)
-            startTimer { [weak self, weak store, track] in
+            startTimer(interval: 0.2) { [weak self, weak store, track] in
                 guard let self, let store else { return }
                 self.tickRenderEngine(self.twoTrackMixEngine, track: track, store: store)
             }
         } catch {
+            stopCurrent()
+            // A missing drums/drumless file is recoverable: drop the dangling
+            // records (the track re-renders) and fall back to Original (F7). An
+            // incompatible existing pair is a real defect, not a deleted file —
+            // surface it like the single-file catch above rather than silently
+            // swapping to Original with no indication.
+            if store.recoverMissingRenderFiles(for: track.id) {
+                renderPlaybackBackend = nil
+                mode = nil
+                playTrack(track: track, store: store, source: .original, startElapsed: startElapsed)
+                return
+            }
             renderPlaybackBackend = nil
             mode = nil
             store.nowPlayingTrackID = track.id
             store.setActiveQueueSource(.drumBoost)
-            store.setPlaybackElapsed(startElapsed, duration: track.duration)
+            store.setPlaybackElapsed(startElapsed, duration: transportDuration(for: track))
             store.setPlaybackPlaying(false)
             store.playbackErrorMessage = error.localizedDescription
         }
@@ -145,7 +211,7 @@ final class AudioPlaybackController {
         let wasPlaying = isCurrentRender && store.isPlaybackPlaying
         if isCurrentRender {
             let currentElapsed = currentRenderElapsed(store: store)
-            store.setPlaybackElapsed(currentElapsed, duration: track.duration)
+            store.setPlaybackElapsed(currentElapsed, duration: transportDuration(for: track))
         }
         store.selectNowPlayingPlaybackSource(source, for: track)
 
@@ -178,13 +244,14 @@ final class AudioPlaybackController {
     func seek(by seconds: TimeInterval, store: LibraryStore) {
         guard let track = store.nowPlayingTrack else { return }
         let current = currentRenderElapsed(store: store)
-        let target = min(max(0, current + seconds), track.duration)
-        let progress = track.duration > 0 ? target / track.duration : 0
+        let duration = transportDuration(for: track)
+        let target = min(max(0, current + seconds), duration)
+        let progress = duration > 0 ? target / duration : 0
         seekRender(toProgress: progress, track: track, store: store)
     }
 
     func seekRender(toProgress progress: Double, track: BackbeatTrack, store: LibraryStore) {
-        let targetElapsed = PlaybackScrubPosition.elapsed(progress: progress, duration: track.duration)
+        let targetElapsed = PlaybackScrubPosition.elapsed(progress: progress, duration: transportDuration(for: track))
         store.nowPlayingTrackID = track.id
 
         if let engine = activeRenderEngine(for: track) {
@@ -195,7 +262,7 @@ final class AudioPlaybackController {
                              normalizationGainDB: store.normalizationGainDB(for: track))
         }
 
-        store.setPlaybackElapsed(targetElapsed, duration: track.duration)
+        store.setPlaybackElapsed(targetElapsed, duration: transportDuration(for: track))
     }
 
     func setPracticeSpeed(_ speed: Double, track: BackbeatTrack, store: LibraryStore) {
@@ -211,26 +278,44 @@ final class AudioPlaybackController {
     }
 
     func setPracticeLoopMode(_ mode: PracticeLoopMode, track: BackbeatTrack, store: LibraryStore) {
-        store.setPracticeLoopMode(mode, duration: track.duration)
-        enforcePracticeLoopBounds(track: track, store: store)
+        store.setPracticeLoopMode(mode, duration: transportDuration(for: track))
+        syncEngineSectionLoop(track: track, store: store)
     }
 
     func setPracticeLoopStart(_ elapsed: TimeInterval, track: BackbeatTrack, store: LibraryStore) {
-        store.setPracticeLoopStart(elapsed, duration: track.duration)
-        enforcePracticeLoopBounds(track: track, store: store)
+        store.setPracticeLoopStart(elapsed, duration: transportDuration(for: track))
+        syncEngineSectionLoop(track: track, store: store)
     }
 
     func setPracticeLoopEnd(_ elapsed: TimeInterval, track: BackbeatTrack, store: LibraryStore) {
-        store.setPracticeLoopEnd(elapsed, duration: track.duration)
-        enforcePracticeLoopBounds(track: track, store: store)
+        store.setPracticeLoopEnd(elapsed, duration: transportDuration(for: track))
+        syncEngineSectionLoop(track: track, store: store)
+    }
+
+    // Marker capture reads the engine's live position — the 0.2s UI poll is
+    // too stale for a precision feature (the old faster section-loop poll
+    // was itself 30ms stale).
+    func capturePracticeLoopStart(track: BackbeatTrack, store: LibraryStore) {
+        setPracticeLoopStart(currentRenderElapsed(store: store), track: track, store: store)
+    }
+
+    func capturePracticeLoopEnd(track: BackbeatTrack, store: LibraryStore) {
+        setPracticeLoopEnd(currentRenderElapsed(store: store), track: track, store: store)
     }
 
     func clearPracticeLoop(track: BackbeatTrack, store: LibraryStore) {
         store.clearPracticeLoop()
+        syncEngineSectionLoop(track: track, store: store)
     }
 
     func resetPracticePlayback(store: LibraryStore) {
         store.resetPracticeState()
+        // Store-side clears must reach the engines — with wrap ownership in
+        // the chain, a cleared store alone leaves audio looping A→B forever
+        // (the route-change zombie loop); a nil on a chain-less engine is a
+        // guarded no-op.
+        singleFileEngine.setSectionLoop(nil)
+        twoTrackMixEngine.setSectionLoop(nil)
         singleFileEngine.setSpeed(store.practiceSpeed)
         twoTrackMixEngine.setSpeed(store.practiceSpeed)
     }
@@ -252,7 +337,7 @@ final class AudioPlaybackController {
     private func pauseRender(store: LibraryStore) {
         // Commit the engine's exact position before the timer stops; resume reads store.playbackElapsed.
         if let track = store.nowPlayingTrack {
-            store.setPlaybackElapsed(currentRenderElapsed(store: store), duration: track.duration)
+            store.setPlaybackElapsed(currentRenderElapsed(store: store), duration: transportDuration(for: track))
         }
         singleFileEngine.pause()
         twoTrackMixEngine.pause()
@@ -262,19 +347,25 @@ final class AudioPlaybackController {
 
     private func tickRenderEngine(_ engine: RenderPlaybackEngine, track: BackbeatTrack, store: LibraryStore) {
         let schedule = PracticePlaybackSchedule(
-            duration: track.duration,
+            duration: transportDuration(for: track),
             loopMode: store.practiceLoopMode,
             loopRange: store.practiceLoopRange,
             speed: store.practiceSpeed
         )
         switch schedule.tickAction(forElapsed: engine.currentElapsed()) {
         case .wrap(let target):
-            try? engine.seek(to: target,
-                             autoplay: store.isPlaybackPlaying,
-                             volume: store.volume,
-                             speed: store.practiceSpeed,
-                             normalizationGainDB: store.normalizationGainDB(for: track))
-            store.setPlaybackElapsed(target, duration: track.duration)
+            // The chain owns the wrap (D-094); a transient float/debounce
+            // .wrap must not flush it.
+            if engine.isSectionLoopChainActive {
+                store.setPlaybackElapsed(engine.currentElapsed(), duration: transportDuration(for: track))
+            } else {
+                try? engine.seek(to: target,
+                                 autoplay: store.isPlaybackPlaying,
+                                 volume: store.volume,
+                                 speed: store.practiceSpeed,
+                                 normalizationGainDB: store.normalizationGainDB(for: track))
+                store.setPlaybackElapsed(target, duration: transportDuration(for: track))
+            }
         case .finished:
             if let nextTrack = store.advanceQueue() {
                 playTrack(
@@ -287,13 +378,19 @@ final class AudioPlaybackController {
                 stopRender(track: track, store: store)
             }
         case .progress(let elapsed):
-            store.setPlaybackElapsed(elapsed, duration: track.duration)
+            store.setPlaybackElapsed(elapsed, duration: transportDuration(for: track))
         }
     }
 
-    private func startTimer(_ action: @MainActor @Sendable @escaping () -> Void) {
+    private func startTimer(interval: TimeInterval, _ action: @MainActor @Sendable @escaping () -> Void) {
+        activeTickAction = action
+        armTimer(interval: interval)
+    }
+
+    private func armTimer(interval: TimeInterval) {
+        guard let action = activeTickAction else { return }
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
             Task { @MainActor in
                 action()
             }
@@ -303,6 +400,17 @@ final class AudioPlaybackController {
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
+        activeTickAction = nil
+    }
+
+    private func handlePlaybackInterrupted(elapsed: TimeInterval) {
+        // An engine's audio graph was torn down by a hardware/format change.
+        // Commit the real position and reflect paused so the transport isn't
+        // left advancing over silence (F3); the next play rebuilds the graph.
+        guard let store = activeStore, let track = store.nowPlayingTrack else { return }
+        store.setPlaybackElapsed(elapsed, duration: transportDuration(for: track))
+        store.setPlaybackPlaying(false)
+        stopTimer()
     }
 
     private func stopCurrent() {
@@ -340,21 +448,37 @@ final class AudioPlaybackController {
         }
     }
 
-    private func enforcePracticeLoopBounds(track: BackbeatTrack, store: LibraryStore) {
-        guard
-            mode == .render(track.id),
-            store.practiceLoopMode == .section,
-            let range = store.practiceLoopRange,
-            let engine = activeRenderEngine(for: track)
-        else { return }
+    // The file-derived duration is authoritative whenever an engine is loaded
+    // for this track; track.duration (AVFoundation's fast estimate, which
+    // drifts on VBR sources) is only the fallback for pre-load, post-stop, and
+    // engine-failure catch paths where the backend is nil (F1 companion fix).
+    private func transportDuration(for track: BackbeatTrack) -> TimeInterval {
+        activeRenderEngine(for: track)?.transportDuration ?? track.duration
+    }
 
+    private func syncEngineSectionLoop(track: BackbeatTrack, store: LibraryStore) {
+        // The practice loop is global store state and the edit can arrive from
+        // a detail view showing a DIFFERENT track (PracticeControlsView has no
+        // now-playing gate): resolve through the controller's own mode — the
+        // only truth about which engine is live. nowPlayingTrackID is NOT
+        // usable here: a detail-view scrub sets it without starting playback,
+        // which would strand the real engine's chain (zombie loop).
+        guard case .render(let activeTrackID) = mode, let track = store.track(id: activeTrackID) else { return }
+        guard let engine = activeRenderEngine(for: track) else { return }
+        engine.setSectionLoop(effectiveSectionLoop(store: store))
+
+        // Immediate UI snap, mirroring the old bounds-enforcement store write: the
+        // engine's debounced rebuild lands ~120 ms later, but a playhead outside
+        // the new range should reflect A right away. A range starting at/past the
+        // file-derived duration degrades to run-to-end instead (Phase A).
+        guard
+            store.practiceLoopMode == .section,
+            let range = store.practiceLoopRange
+        else { return }
+        let duration = transportDuration(for: track)
+        guard range.start < duration else { return }
         let current = engine.currentElapsed()
         guard current < range.start || current >= range.end else { return }
-        try? engine.seek(to: range.start,
-                         autoplay: store.isPlaybackPlaying,
-                         volume: store.volume,
-                         speed: store.practiceSpeed,
-                         normalizationGainDB: store.normalizationGainDB(for: track))
-        store.setPlaybackElapsed(range.start, duration: track.duration)
+        store.setPlaybackElapsed(range.start, duration: duration)
     }
 }

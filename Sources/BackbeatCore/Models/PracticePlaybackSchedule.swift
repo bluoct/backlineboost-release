@@ -12,9 +12,23 @@ public struct PracticePlaybackSchedule: Equatable, Sendable {
         loopRange: PracticeLoopRange?,
         speed: Double
     ) {
-        self.duration = max(0, duration)
+        let clampedDuration = max(0, duration)
+        self.duration = clampedDuration
         self.loopMode = loopMode
-        self.loopRange = loopRange
+        // A range starting at or past the file-derived duration can never be
+        // reached, so it degrades to nil (plain run-to-end) instead of being
+        // round-tripped through PracticeLoopRange.init, whose 0.05s minimum-length
+        // re-centering would otherwise manufacture a "valid" micro-loop at EOF —
+        // the exact silent stall this clamp exists to close.
+        if let loopRange, loopRange.start < clampedDuration {
+            self.loopRange = PracticeLoopRange(
+                start: loopRange.start,
+                end: min(loopRange.end, clampedDuration),
+                duration: clampedDuration
+            )
+        } else {
+            self.loopRange = nil
+        }
         self.speed = speed.isFinite ? min(1.5, max(0.5, speed)) : 1
     }
 

@@ -124,6 +124,36 @@ final class SeparationInputLoaderTests: XCTestCase {
             "alias image at 20.6 kHz must sit ≥ 50 dB below the passband tone")
     }
 
+    func testResampleKeepsFirstTwoChannelsWhenSourceHasMore() throws {
+        // The streamed decode→resample path (F13) trims to the first two channels
+        // inside the converter input block; confirm a >2-channel non-44.1 kHz
+        // source keeps exactly channels 0 and 1 without downmixing them together.
+        let rate = 48_000.0
+        let count = 24_000
+        let first = sine(frequency: 500, rate: rate, count: count, amplitude: 0.3)
+        let second = sine(frequency: 1_500, rate: rate, count: count, amplitude: 0.3)
+        let third = sine(frequency: 3_000, rate: rate, count: count, amplitude: 0.3)
+        let url = try writeFloatWAV(fixture("multi48.wav"), sampleRate: rate, channels: [first, second, third])
+
+        let input = try SeparationInputLoader().load(url: url)
+
+        XCTAssertEqual(input.sampleRate, 44_100)
+        XCTAssertEqual(input.channels.count, 2, "the streamed resample keeps exactly the first two channels")
+        XCTAssertEqual(input.channels[0].count, input.channels[1].count)
+        XCTAssertTrue(input.channels[0].allSatisfy(\.isFinite))
+
+        let analysis0 = Array(input.channels[0][4_096..<(4_096 + 16_384)])
+        let analysis1 = Array(input.channels[1][4_096..<(4_096 + 16_384)])
+        XCTAssertGreaterThan(
+            toneAmplitude(analysis0, frequency: 500, rate: 44_100), 0.2,
+            "channel 0 must retain its own 500 Hz tone, not a downmix"
+        )
+        XCTAssertGreaterThan(
+            toneAmplitude(analysis1, frequency: 1_500, rate: 44_100), 0.2,
+            "channel 1 must retain its own 1500 Hz tone, not a downmix"
+        )
+    }
+
     // MARK: - Fixture + analysis helpers
 
     private func fixture(_ name: String) -> URL {

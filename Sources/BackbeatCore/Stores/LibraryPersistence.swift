@@ -3,12 +3,19 @@ import Foundation
 public final class LibraryDecodeDiagnostics: @unchecked Sendable {
     private let lock = NSLock()
     private var droppedTracks = 0
+    private var droppedPlaylists = 0
     private var defaultedFields = 0
 
     public var droppedTrackCount: Int {
         lock.lock()
         defer { lock.unlock() }
         return droppedTracks
+    }
+
+    public var droppedPlaylistCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return droppedPlaylists
     }
 
     public var defaultedFieldCount: Int {
@@ -23,6 +30,12 @@ public final class LibraryDecodeDiagnostics: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         droppedTracks += 1
+    }
+
+    func recordDroppedPlaylist() {
+        lock.lock()
+        defer { lock.unlock() }
+        droppedPlaylists += 1
     }
 
     func recordDefaultedField() {
@@ -59,6 +72,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
     public let isTracksSectionCollapsed: Bool
     public let isPlaylistOverflowExpanded: Bool
     public let isTracksOverflowExpanded: Bool
+    public let librarySortOrder: LibrarySortOrder
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -78,6 +92,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         case isTracksSectionCollapsed
         case isPlaylistOverflowExpanded
         case isTracksOverflowExpanded
+        case librarySortOrder
     }
 
     public init(
@@ -97,7 +112,8 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         isPlaylistsSectionCollapsed: Bool = false,
         isTracksSectionCollapsed: Bool = false,
         isPlaylistOverflowExpanded: Bool = false,
-        isTracksOverflowExpanded: Bool = false
+        isTracksOverflowExpanded: Bool = false,
+        librarySortOrder: LibrarySortOrder = .default
     ) {
         self.schemaVersion = schemaVersion
         self.tracks = tracks
@@ -116,6 +132,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         self.isTracksSectionCollapsed = isTracksSectionCollapsed
         self.isPlaylistOverflowExpanded = isPlaylistOverflowExpanded
         self.isTracksOverflowExpanded = isTracksOverflowExpanded
+        self.librarySortOrder = librarySortOrder
     }
 
     // Missing keys default silently (forward compatibility); a key that is
@@ -158,26 +175,50 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             }
         }
         tracks = decodedTracks
-        selectedTrackID = try container.decodeIfPresent(BackbeatTrack.ID.self, forKey: .selectedTrackID)
-        nowPlayingTrackID = try container.decodeIfPresent(BackbeatTrack.ID.self, forKey: .nowPlayingTrackID)
-        selectedPlaybackVariant = try container.decodeIfPresent(RenderVariant.self, forKey: .selectedPlaybackVariant) ?? .boostedDrums
-        nowPlayingPlaybackVariant = try container.decodeIfPresent(RenderVariant.self, forKey: .nowPlayingPlaybackVariant) ?? selectedPlaybackVariant
-        playlists = try container.decodeIfPresent([BackbeatPlaylist].self, forKey: .playlists) ?? []
-        selectedPlaylistID = try container.decodeIfPresent(BackbeatPlaylist.ID.self, forKey: .selectedPlaylistID)
-        activeQueue = try container.decodeIfPresent(PlaybackQueue.self, forKey: .activeQueue)
-        selectedPlaybackSource = try container.decodeIfPresent(PlaybackSource.self, forKey: .selectedPlaybackSource)
+        // Every non-track field is now tolerant: a single present-but-malformed
+        // scalar used to throw the whole init out to the empty-library recovery
+        // path, wiping a healthy library over one bad value (F6). Scalars default
+        // (and are recorded); playlists skip per element like tracks.
+        selectedTrackID = Self.decodeTolerantly(BackbeatTrack.ID.self, in: container, forKey: .selectedTrackID, diagnostics: diagnostics)
+        nowPlayingTrackID = Self.decodeTolerantly(BackbeatTrack.ID.self, in: container, forKey: .nowPlayingTrackID, diagnostics: diagnostics)
+        selectedPlaybackVariant = Self.decodeTolerantly(RenderVariant.self, in: container, forKey: .selectedPlaybackVariant, diagnostics: diagnostics) ?? .boostedDrums
+        nowPlayingPlaybackVariant = Self.decodeTolerantly(RenderVariant.self, in: container, forKey: .nowPlayingPlaybackVariant, diagnostics: diagnostics) ?? selectedPlaybackVariant
+
+        var decodedPlaylists: [BackbeatPlaylist] = []
+        if container.contains(.playlists) {
+            do {
+                var playlistsContainer = try container.nestedUnkeyedContainer(forKey: .playlists)
+                while !playlistsContainer.isAtEnd {
+                    do {
+                        decodedPlaylists.append(try playlistsContainer.decode(BackbeatPlaylist.self))
+                    } catch {
+                        _ = try playlistsContainer.decode(SkippedCodableValue.self)
+                        diagnostics?.recordDroppedPlaylist()
+                    }
+                }
+            } catch {
+                // `.playlists` is present but not an array — drop the field.
+                diagnostics?.recordDefaultedField()
+            }
+        }
+        playlists = decodedPlaylists
+
+        selectedPlaylistID = Self.decodeTolerantly(BackbeatPlaylist.ID.self, in: container, forKey: .selectedPlaylistID, diagnostics: diagnostics)
+        activeQueue = Self.decodeTolerantly(PlaybackQueue.self, in: container, forKey: .activeQueue, diagnostics: diagnostics)
+        selectedPlaybackSource = Self.decodeTolerantly(PlaybackSource.self, in: container, forKey: .selectedPlaybackSource, diagnostics: diagnostics)
             ?? PlaybackSource(renderVariant: selectedPlaybackVariant)
-        nowPlayingPlaybackSource = try container.decodeIfPresent(PlaybackSource.self, forKey: .nowPlayingPlaybackSource)
+        nowPlayingPlaybackSource = Self.decodeTolerantly(PlaybackSource.self, in: container, forKey: .nowPlayingPlaybackSource, diagnostics: diagnostics)
             ?? PlaybackSource(renderVariant: nowPlayingPlaybackVariant)
         volume = Self.decodeTolerantly(Double.self, in: container, forKey: .volume, diagnostics: diagnostics) ?? 0.8
-        playbackNormalizationSettings = try container.decodeIfPresent(
-            PlaybackNormalizationSettings.self,
-            forKey: .playbackNormalizationSettings
-        ) ?? .default
-        isPlaylistsSectionCollapsed = try container.decodeIfPresent(Bool.self, forKey: .isPlaylistsSectionCollapsed) ?? false
-        isTracksSectionCollapsed = try container.decodeIfPresent(Bool.self, forKey: .isTracksSectionCollapsed) ?? false
-        isPlaylistOverflowExpanded = try container.decodeIfPresent(Bool.self, forKey: .isPlaylistOverflowExpanded) ?? false
-        isTracksOverflowExpanded = try container.decodeIfPresent(Bool.self, forKey: .isTracksOverflowExpanded) ?? false
+        playbackNormalizationSettings = Self.decodeTolerantly(PlaybackNormalizationSettings.self, in: container, forKey: .playbackNormalizationSettings, diagnostics: diagnostics) ?? .default
+        isPlaylistsSectionCollapsed = Self.decodeTolerantly(Bool.self, in: container, forKey: .isPlaylistsSectionCollapsed, diagnostics: diagnostics) ?? false
+        isTracksSectionCollapsed = Self.decodeTolerantly(Bool.self, in: container, forKey: .isTracksSectionCollapsed, diagnostics: diagnostics) ?? false
+        isPlaylistOverflowExpanded = Self.decodeTolerantly(Bool.self, in: container, forKey: .isPlaylistOverflowExpanded, diagnostics: diagnostics) ?? false
+        isTracksOverflowExpanded = Self.decodeTolerantly(Bool.self, in: container, forKey: .isTracksOverflowExpanded, diagnostics: diagnostics) ?? false
+        // LibrarySortOrder's own decoder already degrades unknown values to
+        // the default without throwing, so this wrapper only catches a
+        // structurally malformed value (e.g. not a dictionary).
+        librarySortOrder = Self.decodeTolerantly(LibrarySortOrder.self, in: container, forKey: .librarySortOrder, diagnostics: diagnostics) ?? .default
     }
 
     @MainActor
@@ -198,7 +239,8 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             isPlaylistsSectionCollapsed: store.isPlaylistsSectionCollapsed,
             isTracksSectionCollapsed: store.isTracksSectionCollapsed,
             isPlaylistOverflowExpanded: store.isPlaylistOverflowExpanded,
-            isTracksOverflowExpanded: store.isTracksOverflowExpanded
+            isTracksOverflowExpanded: store.isTracksOverflowExpanded,
+            librarySortOrder: store.librarySortOrder
         )
     }
 
@@ -236,7 +278,8 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
             isPlaylistsSectionCollapsed: isPlaylistsSectionCollapsed,
             isTracksSectionCollapsed: isTracksSectionCollapsed,
             isPlaylistOverflowExpanded: isPlaylistOverflowExpanded,
-            isTracksOverflowExpanded: isTracksOverflowExpanded
+            isTracksOverflowExpanded: isTracksOverflowExpanded,
+            librarySortOrder: librarySortOrder
         )
     }
 }
@@ -330,11 +373,12 @@ public struct LibraryPersistence: Sendable {
     struct LibraryLoadResult {
         let snapshot: LibrarySnapshot
         let droppedTrackCount: Int
+        let droppedPlaylistCount: Int
         let defaultedFieldCount: Int
         let sourceURL: URL
 
         var isLossy: Bool {
-            droppedTrackCount > 0 || defaultedFieldCount > 0
+            droppedTrackCount > 0 || droppedPlaylistCount > 0 || defaultedFieldCount > 0
         }
     }
 
@@ -361,6 +405,7 @@ public struct LibraryPersistence: Sendable {
             return LibraryLoadResult(
                 snapshot: migratedSnapshot,
                 droppedTrackCount: legacyResult.droppedTrackCount,
+                droppedPlaylistCount: legacyResult.droppedPlaylistCount,
                 defaultedFieldCount: legacyResult.defaultedFieldCount,
                 sourceURL: legacyResult.sourceURL
             )
@@ -381,6 +426,7 @@ public struct LibraryPersistence: Sendable {
         return LibraryLoadResult(
             snapshot: snapshot,
             droppedTrackCount: diagnostics.droppedTrackCount,
+            droppedPlaylistCount: diagnostics.droppedPlaylistCount,
             defaultedFieldCount: diagnostics.defaultedFieldCount,
             sourceURL: url
         )
@@ -405,7 +451,10 @@ public struct LibraryPersistence: Sendable {
             isPlaylistsSectionCollapsed: snapshot.isPlaylistsSectionCollapsed,
             isTracksSectionCollapsed: snapshot.isTracksSectionCollapsed,
             isPlaylistOverflowExpanded: snapshot.isPlaylistOverflowExpanded,
-            isTracksOverflowExpanded: snapshot.isTracksOverflowExpanded
+            isTracksOverflowExpanded: snapshot.isTracksOverflowExpanded,
+            // Explicit pass-through (never the memberwise default): a
+            // re-migration must not silently reset the sort preference.
+            librarySortOrder: snapshot.librarySortOrder
         )
     }
 
@@ -443,7 +492,11 @@ public struct LibraryPersistence: Sendable {
             artworkURL: try migrateArtworkURL(track.artworkURL),
             drumMixSettings: track.drumMixSettings,
             loudnessProfile: track.loudnessProfile,
-            activeRenders: activeRenders
+            activeRenders: activeRenders,
+            isDurationResolved: track.isDurationResolved,
+            // Explicit pass-through (never the memberwise default): a
+            // re-migration must not silently drop the import date.
+            dateAdded: track.dateAdded
         )
     }
 
@@ -556,6 +609,11 @@ public struct LibraryPersistence: Sendable {
             parts.append("1 track could not be read from your library file and was skipped.")
         } else if result.droppedTrackCount > 1 {
             parts.append("\(result.droppedTrackCount) tracks could not be read from your library file and were skipped.")
+        }
+        if result.droppedPlaylistCount == 1 {
+            parts.append("1 playlist could not be read and was skipped.")
+        } else if result.droppedPlaylistCount > 1 {
+            parts.append("\(result.droppedPlaylistCount) playlists could not be read and were skipped.")
         }
         if result.defaultedFieldCount > 0 {
             parts.append("Some settings could not be read and were reset to defaults.")

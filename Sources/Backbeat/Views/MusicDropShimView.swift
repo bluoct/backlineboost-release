@@ -80,59 +80,85 @@ final class MusicDropShimNSView: NSView {
         let pasteboard = sender.draggingPasteboard
         logPasteboard(pasteboard, stage: "performDragOperation")
 
-        // Tier 1: local library tracks vend a real file URL alongside the
-        // Music flavors — cheapest path when present and readable.
+        // Tiers 1+2 merged (2026-07-08): a multi-track drag vends a real
+        // `public.file-url` for file-reference tracks only, while EVERY
+        // dragged track's `Location` lives in the combined Music metadata
+        // plist on the first pasteboard item. Returning early on whichever
+        // source hit first swallowed the rest of the drag — one file-backed
+        // track made a seven-track drop import a single song. Import the
+        // union instead, deduplicated by standardized path.
         let directURLs = (pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
         ) as? [URL]) ?? []
-        let usableDirect = importableExistingFiles(directURLs)
-        if !usableDirect.isEmpty {
-            deliver(usableDirect)
-            probeLegacyPromise(from: sender, pasteboard: pasteboard)
-            return true
-        }
 
-        // Tier 2: the Music/TV metadata plist carries a per-track `Location`
-        // file URL. Cloud-backed tracks that no longer vend a file URL — and
-        // whose Carbon promise (tier 3) the OS no longer fulfills — are
-        // recovered here. Any locally-present-but-unimportable tracks (DRM
-        // `.m4p`) are remembered so a dead-end drop can explain itself.
+        var metadataURLs: [URL] = []
         var unimportable: [MusicPasteboardMetadataParser.UnimportableTrack] = []
         for identifier in MusicPasteboardMetadataParser.metadataTypeIdentifiers {
             guard let data = pasteboard.data(forType: NSPasteboard.PasteboardType(identifier)) else {
                 continue
             }
-            let importable = importableExistingFiles(
-                MusicPasteboardMetadataParser.locationURLs(from: data)
-            )
+            let located = MusicPasteboardMetadataParser.locationURLs(from: data)
             Self.logger.info(
-                "Tier 2 \(identifier, privacy: .public): \(data.count, privacy: .public) bytes, importable \(importable.count, privacy: .public)"
+                "Tier 2 \(identifier, privacy: .public): \(data.count, privacy: .public) bytes, located \(located.count, privacy: .public)"
             )
-            if !importable.isEmpty {
-                deliver(importable)
-                probeLegacyPromise(from: sender, pasteboard: pasteboard)
-                return true
-            }
+            metadataURLs.append(contentsOf: located)
             unimportable.append(contentsOf: MusicPasteboardMetadataParser.unimportableTracks(from: data))
+        }
+
+        // A candidate whose file is absent is a cloud track that was never
+        // downloaded — reported below, never silently dropped.
+        let candidates = AudioImportFilter.audioFileURLs(
+            from: MusicPasteboardMetadataParser.mergedImportCandidates(
+                direct: directURLs,
+                metadataLocations: metadataURLs
+            )
+        )
+        var importable: [URL] = []
+        var missingFiles: [URL] = []
+        for url in candidates {
+            if FileManager.default.isReadableFile(atPath: url.path) {
+                importable.append(url)
+            } else {
+                missingFiles.append(url)
+            }
+        }
+        Self.logger.info(
+            "Drop candidates: direct \(directURLs.count, privacy: .public), metadata \(metadataURLs.count, privacy: .public), importable \(importable.count, privacy: .public), missing \(missingFiles.count, privacy: .public)"
+        )
+
+        if !importable.isEmpty {
+            deliver(importable)
+            probeLegacyPromise(from: sender, pasteboard: pasteboard)
+            // A partial import still explains what it skipped.
+            reportUnimportable(unimportable, missingFiles: missingFiles)
+            return true
         }
 
         // Tier 3: legacy Carbon file promises. Deprecated and increasingly
         // unreliable (recent macOS returns an empty HFS promise for Music
         // drags), so it is now the last resort behind the metadata path.
-        if fulfillLegacyPromises(from: sender, pasteboard: pasteboard) {
+        if fulfillLegacyPromises(from: sender, pasteboard: pasteboard, unimportable: unimportable, missingFiles: missingFiles) {
             return true
         }
 
         // Nothing imported. If the drag was recognizable protected/unsupported
-        // tracks, say so rather than leaving a silent no-op.
-        reportUnimportable(unimportable)
+        // /not-downloaded tracks, say so rather than leaving a silent no-op.
+        reportUnimportable(unimportable, missingFiles: missingFiles)
         return false
     }
 
     /// Tier 3 body. Returns true when it recognized Carbon file promises and
-    /// started an async import, false when no usable promise was present.
-    private func fulfillLegacyPromises(from sender: NSDraggingInfo, pasteboard: NSPasteboard) -> Bool {
+    /// started an async import, false when no usable promise was present. Carries
+    /// the drop's `unimportable`/`missingFiles` so that if the promise stabilizes
+    /// to no audio, the reasons are still surfaced instead of silently swallowed
+    /// by the `return true` (F9).
+    private func fulfillLegacyPromises(
+        from sender: NSDraggingInfo,
+        pasteboard: NSPasteboard,
+        unimportable: [MusicPasteboardMetadataParser.UnimportableTrack],
+        missingFiles: [URL]
+    ) -> Bool {
         let promiseTypes = MusicPasteboardMetadataParser.filePromiseTypeIdentifiers
         let hasPromise = pasteboard.types?.contains { promiseTypes.contains($0.rawValue) } ?? false
         guard hasPromise else { return false }
@@ -166,6 +192,14 @@ final class MusicDropShimNSView: NSView {
             Self.logger.info("Promised files stabilized: \(audioURLs.map(\.lastPathComponent))")
             if !audioURLs.isEmpty {
                 await importHandler?(audioURLs)
+            } else {
+                // The Carbon promise resolved to no audio — explain the dead-end
+                // drop instead of leaving a silent no-op (F9).
+                self.reportUnimportable(
+                    unimportable,
+                    missingFiles: missingFiles,
+                    fallbackMessage: "Music didn't hand over the dragged track. It may be protected, not downloaded to this Mac, or an unsupported format."
+                )
             }
             try? FileManager.default.removeItem(at: dropDirectory)
         }
@@ -227,19 +261,46 @@ final class MusicDropShimNSView: NSView {
         }
     }
 
-    /// Explains a drop that landed no audio because every recognized track is
-    /// a protected Apple Music download or an unsupported format. A DRM `.m4p`
-    /// is encrypted, so it can be neither decoded nor separated into stems.
-    private func reportUnimportable(_ tracks: [MusicPasteboardMetadataParser.UnimportableTrack]) {
-        guard !tracks.isEmpty else { return }
-        let titles = tracks.map(\.title).joined(separator: "\n")
-        let message: String
-        if tracks.contains(where: { $0.isProtected }) {
-            message = "These are protected Apple Music downloads, which are DRM-encrypted — Backline Boost can't decode or separate them:\n\(titles)\n\nImport a purchased or CD/file copy of the track instead."
-        } else {
-            message = "These tracks are an unsupported format and can't be imported:\n\(titles)"
+    /// Explains every track a drop could not land: protected Apple Music
+    /// downloads (DRM `.m4p` is encrypted, so it can be neither decoded nor
+    /// separated into stems), unsupported formats, and tracks whose local
+    /// file is missing (cloud tracks never downloaded to this Mac). Runs
+    /// after partial imports too — a five-track drop that lands four must
+    /// say why the fifth is absent.
+    private func reportUnimportable(
+        _ tracks: [MusicPasteboardMetadataParser.UnimportableTrack],
+        missingFiles: [URL],
+        fallbackMessage: String? = nil
+    ) {
+        guard !tracks.isEmpty || !missingFiles.isEmpty else {
+            // Nothing track-specific to report, but the caller may still need to
+            // explain a dead-end drop (a legacy promise that delivered no audio)
+            // rather than leave a silent no-op (F9).
+            if let fallbackMessage {
+                let handler = onReject
+                Task { @MainActor in handler?(fallbackMessage) }
+            }
+            return
         }
-        Self.logger.info("Rejected drop: \(tracks.count, privacy: .public) unimportable track(s)")
+        var sections: [String] = []
+        let protected = tracks.filter(\.isProtected)
+        if !protected.isEmpty {
+            let titles = protected.map(\.title).joined(separator: "\n")
+            sections.append("These are protected Apple Music downloads, which are DRM-encrypted — Backline Boost can't decode or separate them:\n\(titles)\n\nImport a purchased or CD/file copy of the track instead.")
+        }
+        let unsupported = tracks.filter { !$0.isProtected }
+        if !unsupported.isEmpty {
+            let titles = unsupported.map(\.title).joined(separator: "\n")
+            sections.append("These tracks are an unsupported format and can't be imported:\n\(titles)")
+        }
+        if !missingFiles.isEmpty {
+            let titles = missingFiles
+                .map { $0.deletingPathExtension().lastPathComponent }
+                .joined(separator: "\n")
+            sections.append("These tracks aren't downloaded on this Mac, so there is no audio file to import:\n\(titles)\n\nDownload them in Music first, then drag them again.")
+        }
+        let message = sections.joined(separator: "\n\n")
+        Self.logger.info("Rejected drop: \(tracks.count, privacy: .public) unimportable, \(missingFiles.count, privacy: .public) missing track(s)")
         let handler = onReject
         Task { @MainActor in
             handler?(message)
@@ -265,12 +326,6 @@ final class MusicDropShimNSView: NSView {
         let importHandler = onImport
         Task { @MainActor in
             await importHandler?(urls)
-        }
-    }
-
-    private func importableExistingFiles(_ urls: [URL]) -> [URL] {
-        AudioImportFilter.audioFileURLs(from: urls).filter { url in
-            FileManager.default.isReadableFile(atPath: url.path)
         }
     }
 

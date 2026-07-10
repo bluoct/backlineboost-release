@@ -16,6 +16,12 @@ public final class RenderQueueCoordinator {
     // internal so tests can await the in-flight job deterministically.
     private(set) var activeRenderTask: Task<Void, Never>?
 
+    /// Fires after a render finishes and its result is committed to the store,
+    /// so the app can persist the change even when no window is observing — a
+    /// render can complete while the window is closed, and the root view's
+    /// `.onChange` save trigger only fires while its view is alive (F8).
+    public var onLibraryChanged: (@MainActor () -> Void)?
+
     private let store: LibraryStore
     private let renderExecution: RenderExecution
 
@@ -155,6 +161,10 @@ public final class RenderQueueCoordinator {
                 store.markRenderFailed(for: trackID, message: message)
             }
         }
+
+        // Persist the completed/reverted/failed status even when the window is
+        // closed — the root view's save trigger is gone once its view dies (F8).
+        onLibraryChanged?()
 
         activeRenderTask = nil
         activeTrackID = nil
