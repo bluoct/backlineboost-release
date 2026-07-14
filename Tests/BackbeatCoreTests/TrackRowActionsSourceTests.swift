@@ -19,6 +19,10 @@ final class TrackRowActionsSourceTests: XCTestCase {
             source.contains("playback.playTrack(track: track, store: store, source: .original, startElapsed: 0)"),
             "An unrendered track must start playing immediately from its original file."
         )
+        XCTAssertFalse(
+            source.contains("track.status == .ready, store.selectTrackForPlayback"),
+            "Render playback gates on record presence, not status — a re-rendering or render-failed track still holds its old playable pair (D-105)."
+        )
     }
 
     func testRowActionsHostTheSharedTapGestureDispatcher() throws {
@@ -57,7 +61,7 @@ final class TrackRowActionsSourceTests: XCTestCase {
         // a vanished track must not fall through to playing a dead file, and
         // a recoverable fallthrough must not strand the queue-start error.
         XCTAssertTrue(source.contains("guard store.track(id: track.id) != nil else { return }"))
-        XCTAssertTrue(source.contains("store.playbackErrorMessage = nil"))
+        XCTAssertTrue(source.contains("store.playbackFailure = nil"))
     }
 
     private func readSource(_ relativePath: String) throws -> String {

@@ -32,9 +32,9 @@ final class AppBrandIconSourceTests: XCTestCase {
             source.contains("BackbeatBrandIcon.image"),
             "Artwork-less tracks must fall back to the app icon."
         )
-        // Keep the artwork cache path intact (mirrors TrackTileArtworkSourceTests).
-        XCTAssertTrue(source.contains("let artworkImage = cachedArtworkImage"))
-        XCTAssertTrue(source.contains("ArtworkImageCache.image(for:"))
+        // Keep the async thumbnail path intact (mirrors TrackTileArtworkSourceTests).
+        XCTAssertTrue(source.contains("@State private var artworkImage"))
+        XCTAssertTrue(source.contains("ArtworkThumbnails.store.thumbnail("))
         XCTAssertFalse(
             source.contains("NSImage(contentsOf:"),
             "TrackTile must not decode images from disk; the brand-icon loader owns that."

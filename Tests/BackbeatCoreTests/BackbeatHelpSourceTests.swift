@@ -26,15 +26,21 @@ final class BackbeatHelpSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("loadFileURL"))
     }
 
-    func testHelpFileContainsManualReadmeInstallAndLegalNotices() throws {
+    func testHelpFileContainsManualReadmeAndLegalNoticesButNoInstallSection() throws {
         let source = try readSource("Sources/Backbeat/Resources/Help/index.html")
 
         XCTAssertTrue(source.contains("<title>Backline Boost Help</title>"))
         XCTAssertTrue(source.contains("User Manual"))
         XCTAssertTrue(source.contains("README"))
-        XCTAssertTrue(source.contains("Install"))
         XCTAssertTrue(source.contains("Legal Notices"))
         XCTAssertTrue(source.contains("GNU General Public License version 3"))
+
+        // 2.2.0: the app ships signed + notarized, so in-app Help carries no
+        // build-from-source install section and no prototype framing.
+        XCTAssertFalse(source.contains("<section id=\"install\""))
+        XCTAssertFalse(source.contains("href=\"#install\""))
+        XCTAssertFalse(source.contains("prototype"))
+        XCTAssertFalse(source.contains("build_and_run"))
     }
 
     func testHelpFileDocumentsNativeEngineNoticesAndDropsToolInvocations() throws {

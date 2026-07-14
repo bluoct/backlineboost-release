@@ -11,6 +11,12 @@ struct PracticeControlsView<DrumsContent: View>: View {
     let track: BackbeatTrack
     let progress: Double
     var envelope: WaveformEnvelope?
+    // False while ANOTHER track owns the live session: the transport refuses
+    // every bystander practice edit — scrub (D-108), and since owner QA
+    // 2026-07-13 also loop bounds/mode and speed, because the practice state
+    // is global (D-100) and resolves to the LIVE engine: B's marker drag was
+    // yanking A's playhead. The controls disable rather than sit dead.
+    var isPracticeEditingEnabled = true
     var onScrub: (Double) -> Void
     var onMoveLoopStart: (TimeInterval) -> Void
     var onMoveLoopEnd: (TimeInterval) -> Void
@@ -41,15 +47,18 @@ struct PracticeControlsView<DrumsContent: View>: View {
 
                 loopColumn
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .disabled(!isPracticeEditingEnabled)
 
                 columnDivider
 
                 speedColumn
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .disabled(!isPracticeEditingEnabled)
             }
 
             if store.practiceLoopMode == .section {
                 sectionLoopEditor
+                    .disabled(!isPracticeEditingEnabled)
             }
         }
         .padding(.horizontal, 20)
@@ -156,6 +165,7 @@ struct PracticeControlsView<DrumsContent: View>: View {
                 envelope: envelope,
                 showsWaveform: true,
                 height: 46,
+                isScrubEnabled: isPracticeEditingEnabled,
                 onScrub: onScrub,
                 onMoveLoopStart: onMoveLoopStart,
                 onMoveLoopEnd: onMoveLoopEnd

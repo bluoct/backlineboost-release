@@ -231,7 +231,6 @@
       <a href="#mini-player">Mini-player</a>
       <a href="#playlists">Playlists</a>
       <a href="#preferences">Preferences</a>
-      <a href="#install">Install</a>
       <a href="#readme">README</a>
       <a href="#legal">Legal Notices</a>
       <a href="#troubleshooting">Troubleshooting</a>
@@ -240,7 +239,7 @@
     <main>
       <header>
         <h1>Backline Boost</h1>
-        <p>A local macOS practice player for drummers, with Original, Drum Boost, and Drumless playback modes.</p>
+        <p>A local macOS practice player for drummers, with Original, Drum Boost, Drumless, and Drums playback modes.</p>
       </header>
 
       <section id="quick-start">
@@ -249,7 +248,7 @@
           <li>Import supported local audio files with <code>Import Track</code>, <code>Import Folder</code>, or drag and drop from Finder or the Apple Music app.</li>
           <li>Play immediately: every imported track is available as <code>Original</code> right away.</li>
           <li>Backline Boost renders Drums and Drumless in the background, one track at a time.</li>
-          <li>When a track's render finishes, <code>Drum Boost</code> and <code>Drumless</code> light up automatically.</li>
+          <li>When a track's render finishes, <code>Drum Boost</code>, <code>Drumless</code>, and <code>Drums</code> light up automatically.</li>
           <li>Practice in the Player and tune the drum boost live while you play.</li>
         </ol>
         <div class="callout">
@@ -272,6 +271,10 @@
           <div class="card">
             <strong>Drumless</strong>
             Plays the separated backing track without drums.
+          </div>
+          <div class="card">
+            <strong>Drums</strong>
+            Plays the isolated drum track by itself.
           </div>
         </div>
         <p>Backline Boost stores each song locally and reads embedded title, artist, album, and artwork metadata when available. It does not stream from Apple Music, Spotify, or other subscription libraries.</p>
@@ -309,7 +312,7 @@
         <h2>Player View</h2>
         <p>The Player is the full practice surface for one track.</p>
         <ul>
-          <li>Switch among <code>Original</code>, <code>Drum Boost</code>, and <code>Drumless</code>.</li>
+          <li>Switch among <code>Original</code>, <code>Drum Boost</code>, <code>Drumless</code>, and <code>Drums</code>.</li>
           <li>Use previous, seek back 15 seconds, play/pause, seek forward 15 seconds, and next.</li>
           <li>Click or drag the progress bar to scrub.</li>
           <li>Adjust the saved drum boost for the song.</li>
@@ -335,7 +338,7 @@
         <h2>Playlists</h2>
         <p>Playlists are saved practice queues.</p>
         <ul>
-          <li>Create, rename, populate, reorder, play, and delete playlists.</li>
+          <li>Create, rename, populate, play, and delete playlists.</li>
           <li>Deleting a playlist does not delete library tracks or audio assets.</li>
           <li>Choose a playlist default source such as <code>Drum Boost</code> or <code>Drumless</code>.</li>
           <li>Double-click a playlist item to start that track in the playlist queue.</li>
@@ -347,30 +350,17 @@
         <h2>Preferences</h2>
         <p>Open Backline Boost Settings (<code>⌘,</code>). The window has three sections:</p>
         <ul>
-          <li><strong>Playback</strong> — <code>Normalize playback volume</code>, a loudness assist that evens out big volume jumps between songs (it boosts quieter tracks more than it reins in loud ones) and applies across Original, Drum Boost, and Drumless.</li>
+          <li><strong>Playback</strong> — <code>Normalize playback volume</code>, a loudness assist that evens out big volume jumps between songs (it boosts quieter tracks more than it reins in loud ones) and applies across every playback source.</li>
           <li><strong>Rendering</strong> — choose a custom renders folder (or reset to default) and set the render quality (bitrate) for new renders.</li>
           <li><strong>Diagnostics</strong> — <code>Write debug log</code> captures the app's system log to <code>debug.log</code> while enabled; use Reveal in Finder to share it.</li>
         </ul>
       </section>
 
-      <section id="install">
-        <h2>Install</h2>
-        <p>Backline Boost is currently a local macOS prototype built from source. There is not yet a signed, notarized installer package.</p>
-        <h3>Requirements</h3>
-        <ul>
-          <li>macOS 14 or newer.</li>
-          <li>Xcode or Apple Command Line Tools with Swift 6 support.</li>
-          <li>No other tools are required — the drum-separation model ships inside the app, and Backline Boost analyzes, separates, and renders entirely on-device with no network access.</li>
-        </ul>
-        <h3>Build and launch</h3>
-        <pre><code>./script/build_and_run.sh run</code></pre>
-        <p>For normal local use, double-click <code>Launch Backline Boost.command</code> in the repo.</p>
-      </section>
-
       <section id="readme">
         <h2>README</h2>
-        <p><strong>Backline Boost</strong> is an audio player for drummers.</p>
-        <p>Repo documentation includes the user manual, install guide, and legal notices. In the app, use this Help window for the same core guidance without leaving Backline Boost.</p>
+        <p><strong>Backline Boost</strong> is an audio player for drummers, distributed as a signed and notarized Mac app. It requires macOS 14 or newer.</p>
+        <p>Everything runs on-device — the drum-separation model ships inside the app, and analysis, separation, and rendering happen locally with no network access.</p>
+        <p>Backline Boost is free and open source (GPL-3.0). The project repository carries the user manual and legal notices; in the app, use this Help window for the same core guidance without leaving Backline Boost.</p>
       </section>
 
       <section id="legal">
@@ -394,7 +384,7 @@
         <h2>Troubleshooting</h2>
         <h3>Separation model isn&rsquo;t ready</h3>
         <p>The on-device separation model ships inside the app, so it is ready as soon as Backline Boost is installed — nothing to download. The first render after installing (or updating) prepares the model, which can add a few seconds to that one render. If a render fails, use <em>Retry render</em>. Original playback always works.</p>
-        <h3>Drum Boost or Drumless plays Original</h3>
+        <h3>Drum Boost, Drumless, or Drums plays Original</h3>
         <p>The separated assets are not ready for that track yet. Wait for its status to reach Ready, or use Retry render if it failed. Backline Boost falls back to Original so playback remains usable.</p>
         <h3>macOS asks for permission on a Music drag</h3>
         <p>The first Apple Music drag shows a one-time system prompt asking to access Apple Music and your media library. Approve it &mdash; Backline Boost reads the dragged track&rsquo;s file from your Music library and fetches its album artwork from Music&rsquo;s database (Apple Music keeps artwork there, not inside the audio file). If you declined, grant it later in System Settings &#9656; Privacy &amp; Security &#9656; Media &amp; Apple Music.</p>
@@ -403,7 +393,7 @@
         <p>Dragging a track directly from the Apple Music app works for local, purchased, or DRM-free downloaded songs that have a real audio file behind them. A protected Apple Music download (<code>.m4p</code>) is DRM-encrypted &mdash; Backline Boost can&rsquo;t decode or separate it, so dropping one shows a &ldquo;Can&rsquo;t import this track&rdquo; message. A subscription item that isn&rsquo;t downloaded has no local file at all. Either way, use a purchased or file copy of the song, or drag it in from Finder.</p>
       </section>
 
-      <p class="small">Last updated: 2026-07-07</p>
+      <p class="small">Last updated: 2026-07-14</p>
     </main>
   </div>
 </body>

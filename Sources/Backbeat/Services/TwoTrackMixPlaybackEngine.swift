@@ -14,6 +14,11 @@ final class TwoTrackMixPlaybackEngine {
     private var drumlessFile: AVAudioFile?
     private var drumsFile: AVAudioFile?
     private var activeAsset: TwoTrackMixAsset?
+    // The LIVE mix settings for the loaded pair. activeAsset.settings is a
+    // load-time snapshot: drum-boost edits arrive mid-session through
+    // setMixSettings, so every seek/restart must reapply the live value —
+    // reapplying the snapshot audibly reverts a slider edit on scrub.
+    private var activeMixSettings: DrumMixSettings?
     // Transport duration derived from the rendered files themselves, not the
     // persisted track.duration — that value is AVFoundation's fast estimate and
     // drifts on VBR sources, which used to block Drum Boost outright (F1).
@@ -148,6 +153,9 @@ final class TwoTrackMixPlaybackEngine {
 
     func seek(to elapsed: TimeInterval, autoplay: Bool, volume: Double, speed: Double, normalizationGainDB: Double) throws {
         guard let activeAsset else { return }
+        // The live settings, not the asset's load-time snapshot: a scrub must
+        // not audibly revert a mid-session drum-boost edit.
+        let liveMixSettings = activeMixSettings ?? activeAsset.settings
         // Stop only the nodes; the A/B-loop wrap path seeks every iteration and
         // must not tear down the running engine.
         stopNodes()
@@ -161,10 +169,14 @@ final class TwoTrackMixPlaybackEngine {
                 normalizationGainDB: normalizationGainDB,
                 sectionLoop: activeSectionLoop
             )
+            // play(asset:) reapplies the snapshot settings of the asset it was
+            // handed — for this internal restart that asset is the stale
+            // activeAsset, so restore the live value on top.
+            setMixSettings(liveMixSettings)
         } else {
             setOutputGain(volume: volume, normalizationGainDB: normalizationGainDB)
             setSpeed(speed)
-            setMixSettings(activeAsset.settings)
+            setMixSettings(liveMixSettings)
             if let range = activeSectionLoop, buildChain(anchoredAt: elapsed, range: range, snapOutsideToStart: false) {
             } else {
                 schedulePair(from: elapsed)
@@ -184,6 +196,7 @@ final class TwoTrackMixPlaybackEngine {
     }
 
     func setMixSettings(_ settings: DrumMixSettings) {
+        activeMixSettings = settings
         let gains = DrumBoostMixGains(boostDB: settings.boostDB)
         drumlessNode.volume = gains.backingLinearGain
         drumsNode.volume = gains.drumLinearGain
@@ -241,6 +254,9 @@ final class TwoTrackMixPlaybackEngine {
         drumlessFile = candidateDrumlessFile
         drumsFile = candidateDrumsFile
         activeAsset = asset
+        // A fresh pair must not inherit the previous track's live settings;
+        // play(asset:) re-seeds from the new asset right after load.
+        activeMixSettings = nil
         // The rendered files are the source of truth for the timeline; the
         // shorter of the coherent pair bounds the transport (F1).
         let drumlessDuration = Double(candidateDrumlessFile.length) / candidateDrumlessFile.processingFormat.sampleRate

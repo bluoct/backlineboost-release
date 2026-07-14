@@ -13,6 +13,25 @@ final class PlaylistDetailSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("store.startPlaylist("))
     }
 
+    func testPlaylistRowsOpenTracksInThePlayerWithTheWaveformButton() throws {
+        let source = try readSource("Sources/Backbeat/Views/PlaylistDetailView.swift")
+
+        // The open affordance navigates without playing (waveform, never a
+        // play triangle — owner QA 2026-07-13), and the minus button only
+        // removes the playlist entry, never the library track.
+        XCTAssertTrue(source.contains("TrackRowActions(store: store, playback: playback, route: $route).open(track)"))
+        XCTAssertTrue(source.contains("Image(systemName: \"waveform\")"))
+        XCTAssertTrue(source.contains("store.removeTrack(track.id, from: playlistID)"))
+        XCTAssertFalse(source.contains("deleteTrack"), "playlist rows must never delete from the library")
+
+        let library = try readSource("Sources/Backbeat/Views/LibraryView.swift")
+        XCTAssertTrue(library.contains("Image(systemName: \"waveform\")"))
+        XCTAssertFalse(
+            library.contains("track.status == .ready ? \"play.fill\" : \"chevron.right\""),
+            "the open button must not masquerade as a play button"
+        )
+    }
+
     func testPlaylistPlayStaysOnPlaylistAndHighlightsNowPlayingTrack() throws {
         let source = try readSource("Sources/Backbeat/Views/PlaylistDetailView.swift")
 

@@ -67,6 +67,17 @@ public enum LibraryTrackQuery {
         return sorted(filtered, by: sort)
     }
 
+    /// The `selected` IDs in the order `visibleTracks` displayed them.
+    /// Multi-add must append tracks in the order the user saw in the picker
+    /// — raw store order is a different, load-bearing order used elsewhere.
+    public static func orderedSelection(
+        _ selected: Set<BackbeatTrack.ID>,
+        in tracks: [BackbeatTrack],
+        sort: LibrarySortOrder
+    ) -> [BackbeatTrack.ID] {
+        visibleTracks(in: tracks, sort: sort, searchText: "").map(\.id).filter { selected.contains($0) }
+    }
+
     /// The artist string the library row displays: the tag when present,
     /// otherwise the source filename. Search matches what the user sees, so
     /// the filter goes through the same fallback.

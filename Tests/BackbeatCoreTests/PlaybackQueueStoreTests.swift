@@ -335,7 +335,7 @@ final class PlaybackQueueStoreTests: XCTestCase {
         XCTAssertEqual(store.nowPlayingTrackID, first.id)
         XCTAssertEqual(store.nowPlayingPlaybackSource, .drumBoost)
         XCTAssertEqual(store.playbackElapsed, 0)
-        XCTAssertNil(store.playbackErrorMessage)
+        XCTAssertNil(store.playbackFailure)
     }
 
     func testStartLibraryQueueClearsPracticeState() {
@@ -374,7 +374,7 @@ final class PlaybackQueueStoreTests: XCTestCase {
 
         XCTAssertNil(started)
         XCTAssertNil(store.activeQueue)
-        XCTAssertEqual(store.playbackErrorMessage, "Track is not in the current list.")
+        XCTAssertEqual(store.playbackFailure, .trackNotInList)
     }
 
     func testStartLibraryQueueWithNoResolvableTracksSetsErrorMessage() {
@@ -385,7 +385,7 @@ final class PlaybackQueueStoreTests: XCTestCase {
 
         XCTAssertNil(started)
         XCTAssertNil(store.activeQueue)
-        XCTAssertEqual(store.playbackErrorMessage, "No playable tracks.")
+        XCTAssertEqual(store.playbackFailure, .queueEmpty)
     }
 
     func testAdvanceQueueWalksLibraryQueueInVisibleOrder() {

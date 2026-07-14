@@ -17,10 +17,18 @@ public final class LibraryStore {
     public var playbackElapsed: TimeInterval
     public var playbackProgress: Double
     public var isPlaybackPlaying: Bool
+    /// Transient session presence: true from the first play (or resume) of a
+    /// session until the transport stops; pause keeps it true. Distinguishes
+    /// a live session (preserve everything — D-104) from a transport that
+    /// merely stays anchored after stop/finish — stopPlayback deliberately
+    /// keeps nowPlayingTrackID for the MiniPlayer and the replay-scrub
+    /// anchor, so the anchor alone cannot mean "session". Never persisted:
+    /// a relaunch has no live session by definition.
+    public private(set) var isPlaybackSessionActive = false
     public var volume: Double
     public var playbackNormalizationSettings: PlaybackNormalizationSettings
     public var renderFailureMessage: String?
-    public var playbackErrorMessage: String?
+    public var playbackFailure: PlaybackFailure?
     public var libraryLoadRecoveryMessage: String?
     public var practiceSpeed: Double
     public var practiceLoopMode: PracticeLoopMode
@@ -35,6 +43,11 @@ public final class LibraryStore {
     // Library display order (D-102). A durable view preference like the
     // sidebar chrome above, so it persists.
     public var librarySortOrder: LibrarySortOrder
+    /// F8-pattern seam: fired when in-session recovery leaves a track needing a
+    /// fresh render, wired by the app to the render queue — the playback
+    /// controller holds no queue reference, and without this the track strands
+    /// `.imported` until the next launch's scan (COR-004).
+    public var onRenderRecoveryNeeded: ((BackbeatTrack.ID) -> Void)?
 
     public init(
         tracks: [BackbeatTrack] = [],
@@ -72,10 +85,14 @@ public final class LibraryStore {
         self.playbackElapsed = playbackElapsed
         self.playbackProgress = playbackProgress
         self.isPlaybackPlaying = isPlaybackPlaying
+        // Audibly playing IS a session, however the store was constructed. A
+        // restored-but-not-playing anchor is not one: a relaunch resumes with
+        // no live session, so render adoption stays available (D-104).
+        self.isPlaybackSessionActive = isPlaybackPlaying
         self.volume = volume
         self.playbackNormalizationSettings = playbackNormalizationSettings
         self.renderFailureMessage = renderFailureMessage
-        self.playbackErrorMessage = nil
+        self.playbackFailure = nil
         self.libraryLoadRecoveryMessage = nil
         self.practiceSpeed = 1
         self.practiceLoopMode = .off
@@ -223,6 +240,7 @@ public final class LibraryStore {
             nowPlayingTrackID = nil
             nowPlayingPlaybackVariant = .boostedDrums
             isPlaybackPlaying = false
+            isPlaybackSessionActive = false
             playbackElapsed = 0
             playbackProgress = 0
             resetPracticeState()
@@ -234,10 +252,28 @@ public final class LibraryStore {
         }
 
         if var queue = activeQueue {
+            let oldIDs = queue.trackIDs
+            let cursorEntry = oldIDs.indices.contains(queue.currentIndex) ? oldIDs[queue.currentIndex] : nil
             queue.trackIDs.removeAll { $0 == id }
             if queue.trackIDs.isEmpty {
                 activeQueue = nil
+            } else if let cursorEntry, cursorEntry != id {
+                // COR-006: re-anchor by identity, not position — deleting a
+                // predecessor shifts every later ID down, and a numeric clamp
+                // would silently move the cursor off the track that's actually
+                // playing. Subtract the removed occurrences ahead of the
+                // cursor rather than using firstIndex: current-code queues
+                // never hold duplicate IDs, but persisted legacy snapshots
+                // are decoded verbatim and may.
+                let removedBefore = oldIDs[..<queue.currentIndex].count(where: { $0 == id })
+                queue.currentIndex -= removedBefore
+                activeQueue = queue
             } else {
+                // The deleted track was the current entry (or the index was
+                // already out of range) — keep the existing clamp: the cursor
+                // parks on the successor, which then plays on resume but is
+                // skipped by Next (pre-existing semantics; owner ruling
+                // pending — see the codex-remediation plan's deferred list).
                 queue.currentIndex = min(queue.currentIndex, queue.trackIDs.count - 1)
                 activeQueue = queue
             }
@@ -324,6 +360,7 @@ public final class LibraryStore {
             activeQueue = nil
             nowPlayingTrackID = nil
             isPlaybackPlaying = false
+            isPlaybackSessionActive = false
             playbackElapsed = 0
             playbackProgress = 0
             resetPracticeState()
@@ -339,13 +376,13 @@ public final class LibraryStore {
         guard let playlist = playlist(id: playlistID) else { return nil }
         let playableTrackIDs = playlist.trackIDs.filter { track(id: $0) != nil }
         guard !playableTrackIDs.isEmpty else {
-            playbackErrorMessage = "Playlist has no playable tracks."
+            playbackFailure = .playlistEmpty
             return nil
         }
         let startIndex: Int
         if let startingTrackID {
             guard let requestedIndex = playableTrackIDs.firstIndex(of: startingTrackID) else {
-                playbackErrorMessage = "Track is not in this playlist."
+                playbackFailure = .trackNotInPlaylist
                 return nil
             }
             startIndex = requestedIndex
@@ -367,7 +404,7 @@ public final class LibraryStore {
         if restart {
             setPlaybackElapsed(0, duration: firstTrack.duration)
         }
-        playbackErrorMessage = nil
+        playbackFailure = nil
         return firstTrack
     }
 
@@ -384,12 +421,12 @@ public final class LibraryStore {
     ) -> BackbeatTrack? {
         let playableTrackIDs = trackIDs.filter { track(id: $0) != nil }
         guard !playableTrackIDs.isEmpty else {
-            playbackErrorMessage = "No playable tracks."
+            playbackFailure = .queueEmpty
             return nil
         }
         guard let startIndex = playableTrackIDs.firstIndex(of: startingTrackID),
               let firstTrack = track(id: playableTrackIDs[startIndex]) else {
-            playbackErrorMessage = "Track is not in the current list."
+            playbackFailure = .trackNotInList
             return nil
         }
         resetPracticeState()
@@ -405,7 +442,7 @@ public final class LibraryStore {
         if restart {
             setPlaybackElapsed(0, duration: firstTrack.duration)
         }
-        playbackErrorMessage = nil
+        playbackFailure = nil
         return firstTrack
     }
 
@@ -416,7 +453,7 @@ public final class LibraryStore {
         restart: Bool = true
     ) -> BackbeatTrack? {
         guard let track = track(id: trackID), playbackAsset(for: track, preferredSource: preferredSource) != nil else {
-            playbackErrorMessage = "Track is not playable."
+            playbackFailure = .trackNotPlayable
             return nil
         }
         resetPracticeState()
@@ -432,7 +469,7 @@ public final class LibraryStore {
         if restart {
             setPlaybackElapsed(0, duration: track.duration)
         }
-        playbackErrorMessage = nil
+        playbackFailure = nil
         return track
     }
 
@@ -603,17 +640,99 @@ public final class LibraryStore {
     @discardableResult
     public func recoverMissingRenderFiles(for id: BackbeatTrack.ID) -> Bool {
         guard let index = tracks.firstIndex(where: { $0.id == id }) else { return false }
-        let missingVariants = tracks[index].activeRenders.compactMap { variant, record in
-            FileManager.default.fileExists(atPath: record.fileURL.path) ? nil : variant
+        guard dropMissingRenderRecords(at: index) else { return false }
+        if tracks[index].status == .ready, !tracks[index].hasCompleteRenderPair {
+            tracks[index].status = .imported
+        }
+        if tracks[index].status == .imported {
+            if FileManager.default.fileExists(atPath: tracks[index].sourceURL.path) {
+                onRenderRecoveryNeeded?(id)
+            } else {
+                // A render without its input is doomed, and its failure would
+                // overwrite this honest status with .renderFailed + a futile
+                // Retry; enqueueMissingRenders skips .sourceMissing for the
+                // same reason (D-107).
+                tracks[index].status = .sourceMissing
+            }
+        }
+        return true
+    }
+
+    /// Drops render records whose files are gone while their parent directory
+    /// still exists. A missing parent means the folder is unreachable (an
+    /// unplugged external renders drive), not that the files were deleted —
+    /// those records must survive to play again after a remount, or a
+    /// transient unmount cascades into a full-library re-separation.
+    @discardableResult
+    private func dropMissingRenderRecords(at index: Int) -> Bool {
+        let fileManager = FileManager.default
+        let missingVariants = tracks[index].activeRenders.compactMap { variant, record -> RenderVariant? in
+            guard !fileManager.fileExists(atPath: record.fileURL.path) else { return nil }
+            guard fileManager.fileExists(atPath: record.fileURL.deletingLastPathComponent().path) else { return nil }
+            return variant
         }
         guard !missingVariants.isEmpty else { return false }
         for variant in missingVariants {
             tracks[index].removeRender(for: variant)
         }
-        if tracks[index].status == .ready {
-            tracks[index].status = .imported
-        }
         return true
+    }
+
+    /// D-107: the Original-failure classification — when the managed source
+    /// file itself is gone, the track gets an honest status instead of a
+    /// generic playback error. Returns true when the file is missing.
+    @discardableResult
+    public func noteOriginalSourceMissing(for id: BackbeatTrack.ID) -> Bool {
+        guard let index = tracks.firstIndex(where: { $0.id == id }) else { return false }
+        guard !FileManager.default.fileExists(atPath: tracks[index].sourceURL.path) else { return false }
+        tracks[index].status = .sourceMissing
+        return true
+    }
+
+    /// Mid-session inverse of `noteOriginalSourceMissing`: a `.sourceMissing`
+    /// track whose Original just played has its file back, so it re-derives
+    /// its honest status now instead of wearing the stale badge (and being
+    /// skipped by the loudness sweep) until the next launch.
+    public func noteOriginalSourceRestored(for id: BackbeatTrack.ID) {
+        guard let index = tracks.firstIndex(where: { $0.id == id }),
+              tracks[index].status == .sourceMissing,
+              FileManager.default.fileExists(atPath: tracks[index].sourceURL.path) else { return }
+        tracks[index].status = tracks[index].hasCompleteRenderPair ? .ready : .imported
+        if tracks[index].status == .imported {
+            onRenderRecoveryNeeded?(id)
+        }
+    }
+
+    /// Launch pass (D-107): re-derive every track's status from what is actually
+    /// on disk, before the render queue's launch scan. File-stat only — no
+    /// hashing, no decoding. Idempotent; does NOT fire onRenderRecoveryNeeded
+    /// (enqueueMissingRenders runs immediately after and re-derives the queue).
+    public func reconcileLibraryFiles() {
+        for index in tracks.indices {
+            // Drop genuinely deleted render records first, whatever the
+            // status — a record pointing at nothing misleads both resolution
+            // and the launch scan. Records on an unreachable volume survive
+            // (see dropMissingRenderRecords).
+            dropMissingRenderRecords(at: index)
+            if !FileManager.default.fileExists(atPath: tracks[index].sourceURL.path) {
+                // Surviving render records stay — existing Drums/Drumless can
+                // still play; only re-rendering and Original playback are gone.
+                tracks[index].status = .sourceMissing
+                continue
+            }
+            switch tracks[index].status {
+            case .sourceMissing:
+                // Source is back (restored from Trash / volume remounted):
+                // re-derive instead of stranding the honest-but-stale status.
+                tracks[index].status = tracks[index].hasCompleteRenderPair ? .ready : .imported
+            case .ready:
+                if !tracks[index].hasCompleteRenderPair {
+                    tracks[index].status = .imported
+                }
+            case .imported, .rendering, .renderFailed:
+                break
+            }
+        }
     }
 
     /// Legacy single-file boosted-render completion. The current pipeline
@@ -634,10 +753,14 @@ public final class LibraryStore {
         )
         tracks[index].promote(render: render)
         renderFailureMessage = nil
-        if selectedTrackID == id {
+        // D-104 parity: the showcase-the-render flip yields to session
+        // preservation, matching completePracticeRender.
+        if selectedTrackID == id && !(nowPlayingTrackID == id && isPlaybackSessionActive) {
             selectedPlaybackVariant = .boostedDrums
         }
-        if nowPlayingTrackID == id || nowPlayingTrackID == nil {
+        // D-104 parity: adopt only into an idle or stopped transport,
+        // matching completePracticeRender.
+        if nowPlayingTrackID == nil || !isPlaybackSessionActive {
             nowPlayingTrackID = id
             nowPlayingPlaybackVariant = .boostedDrums
             isPlaybackPlaying = false
@@ -679,14 +802,21 @@ public final class LibraryStore {
         tracks[index].promote(render: drumsRender)
         tracks[index].promote(render: drumlessRender)
         renderFailureMessage = nil
-        if selectedTrackID == id {
+        // D-104: the showcase-the-render flip yields to session preservation
+        // — if this track owns the LIVE (playing or paused) session, flipping
+        // its selected source here would still swap the audible source out
+        // from under it on resume. A merely-anchored stopped transport is not
+        // a session (stopPlayback keeps nowPlayingTrackID for the MiniPlayer).
+        if selectedTrackID == id && !(nowPlayingTrackID == id && isPlaybackSessionActive) {
             selectedPlaybackSource = .drumBoost
             selectedPlaybackVariant = .drums
         }
-        // Adopt the rendered track only when nothing is actively playing — a
-        // background render completing while the user listens (even to this
-        // track as Original) must never reset live playback state.
-        if nowPlayingTrackID == nil || (nowPlayingTrackID == id && !isPlaybackPlaying) {
+        // D-104: a paused session is a session — adopt only into an idle or
+        // stopped transport. A live session (even paused, even on this track)
+        // keeps its source, position, and identity; a finished/stopped or
+        // never-started transport gets the freshly rendered Drum Boost track
+        // (the flagship import→listen→render-finishes flow).
+        if nowPlayingTrackID == nil || !isPlaybackSessionActive {
             nowPlayingTrackID = id
             nowPlayingPlaybackSource = .drumBoost
             nowPlayingPlaybackVariant = .drums
@@ -854,6 +984,12 @@ public final class LibraryStore {
     }
 
     public func setPlaybackPlaying(_ isPlaying: Bool) {
+        // Playing (or resuming) is what creates a session; pausing does not
+        // end one — only stopPlayback and the delete paths do (D-104).
+        if isPlaying {
+            isPlaybackSessionActive = true
+            playbackFailure = nil
+        }
         if isPlaybackPlaying != isPlaying {
             isPlaybackPlaying = isPlaying
         }
@@ -861,9 +997,15 @@ public final class LibraryStore {
 
     public func stopPlayback(duration: TimeInterval) {
         isPlaybackPlaying = false
+        isPlaybackSessionActive = false
         setPlaybackElapsed(0, duration: duration)
         resetPracticeState()
     }
+
+    // Test seam: the prune's guard is anchored to the managed source root,
+    // which tests point at a temp directory so deleteTrack's pruning is
+    // behaviorally coverable instead of string-pinned.
+    var managedSourceRootForPruning = BackbeatFileLocations.managedSourceDirectory
 
     private func deleteFiles(for track: BackbeatTrack) throws {
         var seenPaths = Set<String>()
@@ -883,6 +1025,7 @@ public final class LibraryStore {
                 firstError = firstError ?? error
             }
         }
+        ManagedAudioLibrary.pruneEmptySourceDirectory(after: track.sourceURL, root: managedSourceRootForPruning)
         if let firstError {
             throw firstError
         }

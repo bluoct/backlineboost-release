@@ -282,6 +282,108 @@ final class LibraryStoreTests: XCTestCase {
         )
     }
 
+    // Shared fixture for the deleteTrack queue-cursor tests: three tracks
+    // A/B/C with B as the (anchored) current entry. Pass queueIDs to model a
+    // legacy persisted queue shape (e.g. duplicate IDs, decoded verbatim).
+    private func makeQueueCursorFixture(
+        queueIDs: ((BackbeatTrack, BackbeatTrack, BackbeatTrack) -> [BackbeatTrack.ID])? = nil,
+        currentIndex: Int = 1
+    ) -> (store: LibraryStore, a: BackbeatTrack, b: BackbeatTrack, c: BackbeatTrack) {
+        let trackA = BackbeatTrack(
+            id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            title: "A",
+            duration: 100,
+            status: .imported,
+            sourceURL: URL(fileURLWithPath: "/tmp/queue-a.m4a")
+        )
+        let trackB = BackbeatTrack(
+            id: UUID(uuidString: "22222222-3333-4444-5555-666666666666")!,
+            title: "B",
+            duration: 100,
+            status: .imported,
+            sourceURL: URL(fileURLWithPath: "/tmp/queue-b.m4a")
+        )
+        let trackC = BackbeatTrack(
+            id: UUID(uuidString: "33333333-4444-5555-6666-777777777777")!,
+            title: "C",
+            duration: 100,
+            status: .imported,
+            sourceURL: URL(fileURLWithPath: "/tmp/queue-c.m4a")
+        )
+        let ids = queueIDs?(trackA, trackB, trackC) ?? [trackA.id, trackB.id, trackC.id]
+        let store = LibraryStore(
+            tracks: [trackA, trackB, trackC],
+            nowPlayingTrackID: ids.indices.contains(currentIndex) ? ids[currentIndex] : trackB.id,
+            activeQueue: PlaybackQueue(
+                trackIDs: ids,
+                currentIndex: currentIndex,
+                preferredSource: .drumBoost
+            )
+        )
+        return (store, trackA, trackB, trackC)
+    }
+
+    func testDeleteTrackReanchorsQueueCursorWhenPredecessorIsDeleted() throws {
+        let (store, trackA, trackB, trackC) = makeQueueCursorFixture()
+
+        // COR-006: deleting the predecessor of the current entry (B, playing)
+        // must not silently advance the cursor onto C.
+        try store.deleteTrack(id: trackA.id)
+
+        let queue = try XCTUnwrap(store.activeQueue)
+        XCTAssertEqual(queue.trackIDs, [trackB.id, trackC.id])
+        XCTAssertEqual(queue.currentIndex, 0)
+        XCTAssertEqual(queue.trackIDs[queue.currentIndex], trackB.id)
+    }
+
+    func testDeleteTrackKeepsQueueCursorWhenSuccessorIsDeleted() throws {
+        let (store, trackA, trackB, trackC) = makeQueueCursorFixture()
+
+        // Deleting a successor (C) doesn't shift anything before the cursor,
+        // so the index stays put and still points at B.
+        try store.deleteTrack(id: trackC.id)
+
+        let queue = try XCTUnwrap(store.activeQueue)
+        XCTAssertEqual(queue.trackIDs, [trackA.id, trackB.id])
+        XCTAssertEqual(queue.currentIndex, 1)
+        XCTAssertEqual(queue.trackIDs[queue.currentIndex], trackB.id)
+    }
+
+    func testDeleteTrackClampsQueueCursorWhenCurrentEntryIsDeleted() throws {
+        let (store, trackA, trackB, trackC) = makeQueueCursorFixture()
+
+        // Deleting the current entry itself (B) has no surviving identity to
+        // re-anchor to, so this documents the PRE-EXISTING clamp semantic:
+        // index 1 clamped into [A, C] parks the cursor on C, which then plays
+        // on resume but is skipped by Next. Whether Next should instead treat
+        // C as up-next is an open product question (codex-remediation plan,
+        // deferred list) — this test records current behavior, it does not
+        // endorse it.
+        try store.deleteTrack(id: trackB.id)
+
+        let queue = try XCTUnwrap(store.activeQueue)
+        XCTAssertEqual(queue.trackIDs, [trackA.id, trackC.id])
+        XCTAssertEqual(queue.currentIndex, 1)
+        XCTAssertEqual(queue.trackIDs[queue.currentIndex], trackC.id)
+    }
+
+    func testDeleteTrackReanchorsDuplicateIDQueueByPosition() throws {
+        // Legacy persisted queues are decoded verbatim and may contain the
+        // same track twice; the re-anchor must keep THIS occurrence's
+        // position (occurrence counting), not jump to the first duplicate.
+        let (store, trackA, trackB, trackC) = makeQueueCursorFixture(
+            queueIDs: { a, b, c in [b.id, a.id, c.id, b.id] },
+            currentIndex: 3
+        )
+
+        try store.deleteTrack(id: trackA.id)
+
+        let queue = try XCTUnwrap(store.activeQueue)
+        XCTAssertEqual(queue.trackIDs, [trackB.id, trackC.id, trackB.id])
+        XCTAssertEqual(queue.currentIndex, 2)
+        XCTAssertEqual(queue.trackIDs[queue.currentIndex], trackB.id)
+    }
+
     func testNowPlayingTrackIsNilWhenNothingWasStarted() throws {
         let renderedTrack = BackbeatTrack(
             id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
@@ -515,6 +617,43 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertEqual(store.nowPlayingTrackID, track.id)
     }
 
+    func testCompleteBoostedRenderPreservesPausedSessionOnSameTrack() {
+        let track = BackbeatTrack(
+            id: UUID(uuidString: "88888888-9999-aaaa-bbbb-cccccccccccc")!,
+            title: "Paused Legacy",
+            duration: 200,
+            status: .rendering,
+            sourceURL: URL(fileURLWithPath: "/tmp/paused-legacy.m4a")
+        )
+        let store = LibraryStore(
+            tracks: [track],
+            selectedTrackID: track.id,
+            nowPlayingTrackID: track.id,
+            selectedPlaybackVariant: .drumless,
+            nowPlayingPlaybackVariant: .drumless
+        )
+        // A LIVE pause is play-then-pause; an initializer-built anchor would
+        // read as a restored/stopped transport and be adopted over (D-104).
+        store.setPlaybackPlaying(true)
+        store.setPlaybackElapsed(42, duration: 200)
+        store.setPlaybackPlaying(false)
+
+        store.completeBoostedRender(
+            for: track.id,
+            fileURL: URL(fileURLWithPath: "/tmp/renders/boosted_drums/paused-legacy.m4a"),
+            boostDB: 4
+        )
+
+        // D-104 parity: a paused session must survive a legacy-path completion
+        // exactly like the current completePracticeRender path.
+        XCTAssertFalse(store.isPlaybackPlaying)
+        XCTAssertEqual(store.playbackElapsed, 42)
+        XCTAssertEqual(store.nowPlayingTrackID, track.id)
+        XCTAssertEqual(store.nowPlayingPlaybackVariant, .drumless)
+        XCTAssertEqual(store.selectedPlaybackVariant, .drumless)
+        XCTAssertEqual(store.track(id: track.id)?.status, .ready)
+    }
+
     func testCompletePracticeRenderPromotesDrumsAndDrumlessWithoutLegacyBoostedRender() throws {
         let store = LibraryStore()
         let track = store.importTrack(
@@ -682,9 +821,200 @@ final class LibraryStoreTests: XCTestCase {
         XCTAssertTrue(store.isPlaybackPlaying)
         XCTAssertEqual(store.playbackElapsed, 42)
         XCTAssertEqual(store.nowPlayingPlaybackSource, .original)
-        // The selection-side source still upgrades so the Player offers the mix.
-        XCTAssertEqual(store.selectedPlaybackSource, .drumBoost)
+        // D-104: this track is the live session, so the selection-side
+        // source must not flip either — it would swap the audible source
+        // out from under the session on resume.
+        XCTAssertEqual(store.selectedPlaybackSource, .original)
         XCTAssertEqual(store.track(id: track.id)?.status, .ready)
+    }
+
+    func testCompletePracticeRenderPreservesPausedSessionOnSameTrack() {
+        let track = BackbeatTrack(
+            id: UUID(uuidString: "44444444-5555-6666-7777-888888888888")!,
+            title: "Paused While Rendering",
+            duration: 200,
+            status: .rendering,
+            sourceURL: URL(fileURLWithPath: "/tmp/paused-while-rendering.m4a")
+        )
+        let store = LibraryStore(
+            tracks: [track],
+            selectedTrackID: track.id,
+            nowPlayingTrackID: track.id,
+            selectedPlaybackSource: .original,
+            nowPlayingPlaybackSource: .original
+        )
+        // A LIVE pause is play-then-pause, not initializer state: the session
+        // flag is what separates it from a restored/stopped anchor (D-104).
+        store.setPlaybackPlaying(true)
+        store.setPlaybackElapsed(42, duration: 200)
+        store.setPlaybackPlaying(false)
+
+        store.completePracticeRender(
+            for: track.id,
+            result: PracticeRenderResult(
+                drumsURL: URL(fileURLWithPath: "/tmp/renders/drums/pwr2.m4a"),
+                drumlessURL: URL(fileURLWithPath: "/tmp/renders/drumless/pwr2.m4a")
+            )
+        )
+
+        // D-104: a paused session is a session — completion must not adopt
+        // over it or flip its source, even though nothing is audibly playing.
+        XCTAssertFalse(store.isPlaybackPlaying)
+        XCTAssertTrue(store.isPlaybackSessionActive)
+        XCTAssertEqual(store.playbackElapsed, 42)
+        XCTAssertEqual(store.nowPlayingTrackID, track.id)
+        XCTAssertEqual(store.nowPlayingPlaybackSource, .original)
+        XCTAssertEqual(store.selectedPlaybackSource, .original)
+        XCTAssertEqual(store.track(id: track.id)?.status, .ready)
+    }
+
+    func testCompletePracticeRenderAdoptsAfterSessionStopped() {
+        let track = BackbeatTrack(
+            id: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            title: "Finished While Rendering",
+            duration: 200,
+            status: .rendering,
+            sourceURL: URL(fileURLWithPath: "/tmp/finished-while-rendering.m4a")
+        )
+        let store = LibraryStore(
+            tracks: [track],
+            selectedTrackID: track.id,
+            nowPlayingTrackID: track.id,
+            selectedPlaybackSource: .original,
+            nowPlayingPlaybackSource: .original
+        )
+        // The flagship import flow: the song finishes as Original before its
+        // render does. stopPlayback keeps the anchor (MiniPlayer/replay), but
+        // the session is over — completion must still adopt the fresh render.
+        store.setPlaybackPlaying(true)
+        store.stopPlayback(duration: 200)
+        XCTAssertEqual(store.nowPlayingTrackID, track.id, "precondition: stop keeps the anchor")
+
+        store.completePracticeRender(
+            for: track.id,
+            result: PracticeRenderResult(
+                drumsURL: URL(fileURLWithPath: "/tmp/renders/drums/fin.m4a"),
+                drumlessURL: URL(fileURLWithPath: "/tmp/renders/drumless/fin.m4a")
+            )
+        )
+
+        XCTAssertEqual(store.nowPlayingPlaybackSource, .drumBoost)
+        XCTAssertEqual(store.nowPlayingPlaybackVariant, .drums)
+        XCTAssertEqual(store.playbackElapsed, 0)
+        XCTAssertEqual(store.selectedPlaybackSource, .drumBoost)
+        XCTAssertEqual(store.selectedPlaybackVariant, .drums)
+    }
+
+    func testCompletePracticeRenderAdoptsOverRestoredAnchor() {
+        let track = BackbeatTrack(
+            id: UUID(uuidString: "99999999-aaaa-bbbb-cccc-dddddddddddd")!,
+            title: "Restored Anchor",
+            duration: 200,
+            status: .rendering,
+            sourceURL: URL(fileURLWithPath: "/tmp/restored-anchor.m4a")
+        )
+        // Initializer-built anchored-but-not-playing state is the relaunch
+        // shape: no live session exists, so adoption proceeds (matching
+        // pre-D-104 behavior for this state).
+        let store = LibraryStore(
+            tracks: [track],
+            selectedTrackID: track.id,
+            nowPlayingTrackID: track.id,
+            selectedPlaybackSource: .original,
+            nowPlayingPlaybackSource: .original,
+            playbackElapsed: 42,
+            isPlaybackPlaying: false
+        )
+
+        store.completePracticeRender(
+            for: track.id,
+            result: PracticeRenderResult(
+                drumsURL: URL(fileURLWithPath: "/tmp/renders/drums/ra.m4a"),
+                drumlessURL: URL(fileURLWithPath: "/tmp/renders/drumless/ra.m4a")
+            )
+        )
+
+        XCTAssertEqual(store.nowPlayingPlaybackSource, .drumBoost)
+        XCTAssertEqual(store.playbackElapsed, 0)
+    }
+
+    func testCompletePracticeRenderAdoptsWhenPlayerIsIdle() {
+        let track = BackbeatTrack(
+            id: UUID(uuidString: "55555555-6666-7777-8888-999999999999")!,
+            title: "Idle Player",
+            duration: 200,
+            status: .rendering,
+            sourceURL: URL(fileURLWithPath: "/tmp/idle-player.m4a")
+        )
+        let store = LibraryStore(
+            tracks: [track],
+            selectedTrackID: track.id,
+            nowPlayingTrackID: nil,
+            selectedPlaybackSource: .original
+        )
+
+        store.completePracticeRender(
+            for: track.id,
+            result: PracticeRenderResult(
+                drumsURL: URL(fileURLWithPath: "/tmp/renders/drums/idle.m4a"),
+                drumlessURL: URL(fileURLWithPath: "/tmp/renders/drumless/idle.m4a")
+            )
+        )
+
+        // No live session exists, so completion still adopts the track exactly
+        // as before: Drum Boost source, reset to the top.
+        XCTAssertEqual(store.nowPlayingTrackID, track.id)
+        XCTAssertEqual(store.nowPlayingPlaybackSource, .drumBoost)
+        XCTAssertEqual(store.nowPlayingPlaybackVariant, .drums)
+        XCTAssertFalse(store.isPlaybackPlaying)
+        XCTAssertEqual(store.playbackElapsed, 0)
+        XCTAssertEqual(store.selectedPlaybackSource, .drumBoost)
+        XCTAssertEqual(store.selectedPlaybackVariant, .drums)
+    }
+
+    func testCompletePracticeRenderStillFlipsSelectionForDifferentPlayingTrack() {
+        let renderedTrack = BackbeatTrack(
+            id: UUID(uuidString: "66666666-7777-8888-9999-aaaaaaaaaaaa")!,
+            title: "Rendered",
+            duration: 200,
+            status: .rendering,
+            sourceURL: URL(fileURLWithPath: "/tmp/rendered2.m4a")
+        )
+        let playingTrack = BackbeatTrack(
+            id: UUID(uuidString: "77777777-8888-9999-aaaa-bbbbbbbbbbbb")!,
+            title: "Playing",
+            duration: 180,
+            status: .ready,
+            sourceURL: URL(fileURLWithPath: "/tmp/playing2.m4a")
+        )
+        let store = LibraryStore(
+            tracks: [renderedTrack, playingTrack],
+            selectedTrackID: renderedTrack.id,
+            nowPlayingTrackID: playingTrack.id,
+            selectedPlaybackSource: .original,
+            nowPlayingPlaybackSource: .original,
+            playbackElapsed: 15,
+            isPlaybackPlaying: true
+        )
+
+        store.completePracticeRender(
+            for: renderedTrack.id,
+            result: PracticeRenderResult(
+                drumsURL: URL(fileURLWithPath: "/tmp/renders/drums/rendered2.m4a"),
+                drumlessURL: URL(fileURLWithPath: "/tmp/renders/drumless/rendered2.m4a")
+            )
+        )
+
+        // The completed track is only selected, not the live session, so the
+        // live session on the other track stays completely untouched...
+        XCTAssertEqual(store.nowPlayingTrackID, playingTrack.id)
+        XCTAssertTrue(store.isPlaybackPlaying)
+        XCTAssertEqual(store.playbackElapsed, 15)
+        XCTAssertEqual(store.nowPlayingPlaybackSource, .original)
+        // ...but the selection-side source still upgrades so the Player
+        // offers the mix for the track the user is looking at.
+        XCTAssertEqual(store.selectedPlaybackSource, .drumBoost)
+        XCTAssertEqual(store.selectedPlaybackVariant, .drums)
     }
 
     func testRevertRenderingToImportedOnlyAffectsRenderingTracks() {
@@ -1173,14 +1503,18 @@ final class LibraryStoreTests: XCTestCase {
 
         let drumsURL = root.appendingPathComponent("drums.m4a")
         let drumlessURL = root.appendingPathComponent("drumless.m4a")
+        let sourceURL = root.appendingPathComponent("source.m4a")
         try Data("drums".utf8).write(to: drumsURL)
+        try Data("source".utf8).write(to: sourceURL)
         // drumless is intentionally never written — it "vanished" from disk.
+        // The source exists: reverting to .imported only makes sense when a
+        // re-render is possible (a missing source lands .sourceMissing instead).
 
         let track = BackbeatTrack(
             title: "Deleted Render",
             duration: 100,
             status: .ready,
-            sourceURL: root.appendingPathComponent("source.m4a"),
+            sourceURL: sourceURL,
             activeRenders: [
                 .drums: RenderRecord(variant: .drums, fileURL: drumsURL, boostDB: 0),
                 .drumless: RenderRecord(variant: .drumless, fileURL: drumlessURL, boostDB: 0)

@@ -70,7 +70,7 @@ public final class RenderQueueCoordinator {
             case .rendering:
                 enqueue(track.id)
             case .imported:
-                if track.activeRender(for: .drums) == nil || track.activeRender(for: .drumless) == nil {
+                if !track.hasCompleteRenderPair {
                     enqueue(track.id)
                 }
             case .ready, .renderFailed, .sourceMissing:

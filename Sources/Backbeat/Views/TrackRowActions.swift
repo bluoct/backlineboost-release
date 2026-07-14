@@ -41,9 +41,13 @@ struct TrackRowActions {
             // error message and never play a dead file; otherwise clear the
             // queue error and let the legacy single-play path take over.
             guard store.track(id: track.id) != nil else { return }
-            store.playbackErrorMessage = nil
+            store.playbackFailure = nil
         }
-        if track.status == .ready, store.selectTrackForPlayback(track.id, restart: true) {
+        // Gate on render presence, not status: a re-rendering or
+        // render-failed track still holds its old playable pair (D-105's
+        // "keeps playing" promise), and selectTrackForPlayback already
+        // refuses tracks with no render records.
+        if store.selectTrackForPlayback(track.id, restart: true) {
             playback.playRenderFromStart(track: track, store: store)
         } else {
             store.selectTrack(track.id)

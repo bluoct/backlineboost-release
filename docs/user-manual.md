@@ -1,18 +1,19 @@
 # Backline Boost User Manual
 
-Last updated: 2026-07-07
+Last updated: 2026-07-14
 
-Backline Boost is a local macOS practice player for drummers. It imports your own audio files, separates them into drum and backing stems, and lets you practice with three main playback modes:
+Backline Boost is a local macOS practice player for drummers. It imports your own audio files, separates them into drum and backing stems, and lets you practice with four playback modes:
 
 - `Original`: the imported song as-is.
 - `Drum Boost`: a live mix of the separated drums and backing track, with the drum level you chose for that song.
 - `Drumless`: the separated backing track without drums.
+- `Drums`: the isolated drum track by itself.
 
 Backline Boost stores each song locally. It does not stream from Apple Music, Spotify, or other subscription libraries.
 
 ## Requirements
 
-Backline Boost plays imported files immediately in `Original` mode and creates `Drum Boost` and `Drumless` **entirely on-device** — no external tools are required.
+Backline Boost plays imported files immediately in `Original` mode and creates `Drum Boost`, `Drumless`, and `Drums` **entirely on-device** — no external tools are required.
 
 - Supported import formats: AAC, AIFF/AIF, FLAC, M4A, MP3, and WAV.
 - Separation, analysis, and rendering run natively (Apple's MLX). The drum-separation model ships inside the app; nothing is downloaded and no audio leaves your machine.
@@ -50,14 +51,14 @@ The `Library view` is the home screen for imported tracks.
 
 Use it to:
 
-- Import a single audio file with `Import Track`.
+- Import one or more audio files with `Import Track` (its file picker allows multi-select).
 - Import the top-level supported audio files in a folder with `Import Folder`.
 - Drag supported audio files onto the Backline Boost window, either from Finder or directly from the Apple Music app.
 - Browse imported tracks, sorted and searched however you like.
 - Select one or several tracks (Cmd-click or Shift-click extends the selection).
 - Delete one track or the whole selection from Backline Boost after confirmation.
 
-Each row shows the track's title, length, and status, plus a render "Version" column and quick actions. The status reflects where the track is in separation: `Imported`, `Waiting to render (#N)`, its current stage while separating, `Ready`, or `Render failed` (with a retry button).
+Each row shows the track's title, length, and status, plus a render "Version" column and quick actions. The status reflects where the track is in separation: `Imported`, `Waiting to render (#N)`, its current stage while separating, `Ready`, or `Render failed` (with a retry button). A track whose copied source file has been deleted from the managed library shows `Source missing` — its existing Drums/Drumless files remain playable, but re-rendering and Original playback need the file back (restore it, or re-import the song). `Ready` tracks also offer a `Re-render` action (confirmation required) — use it after changing the renders folder or render quality in Settings.
 
 When a track is imported, Backline Boost copies the source file into its managed app library. It also reads embedded title, artist, album, and artwork metadata when available. If a song has no artwork, Backline Boost shows a generated initial tile.
 
@@ -69,7 +70,7 @@ The sort menu above the list orders the library by Date Added, Title, Artist, Al
 
 ### Selecting and playing
 
-Single-clicking a track selects it (Cmd-click and Shift-click select several). Double-clicking a track starts playback from `0:00` — and if no playlist is playing, the rest of the visible list queues up behind it in the order shown, so the library plays on like a playlist. If a playlist *is* playing, the double-clicked track plays once and the playlist then resumes where it left off. The row's play/chevron button opens a track in the Player without changing what's playing.
+Single-clicking a track selects it (Cmd-click and Shift-click select several). Double-clicking a track starts playback from `0:00` — and if no playlist is playing, the rest of the visible list queues up behind it in the order shown, so the library plays on like a playlist. If a playlist *is* playing, the double-clicked track plays once and the playlist then resumes where it left off. The row's waveform button (orange circle when the track is `Ready`) opens a track in the Player without changing what's playing — it navigates, it does not play. The same waveform button appears on playlist rows.
 
 ### Deleting
 
@@ -81,7 +82,7 @@ Backline Boost separates every imported song into drum and backing stems for you
 
 - As soon as a track is imported it is playable as `Original`, and a background job is queued to separate it.
 - Separation runs **one track at a time**. A track that is waiting shows `Waiting to render (#N)`; the one in progress shows its current stage.
-- The stages are: `Separating stems` → `Creating drums track` → `Creating drumless track` → `Finalizing render`. When it finishes, the track's status becomes `Ready`, and `Drum Boost` and `Drumless` become available for it.
+- The stages are: `Separating stems` → `Creating drums track` → `Creating drumless track` → `Finalizing render`. When it finishes, the track's status becomes `Ready`, and `Drum Boost`, `Drumless`, and `Drums` become available for it.
 - Each separation produces one durable `Drums` file and one durable `Drumless` file. `Drum Boost` mixes those two live during playback (see the Player) — it is not a separate mixed-down file. Backline Boost keeps only the newest Drums/Drumless pair for each track.
 - If separation fails, the status shows `Render failed` with a `Retry render` action — see Troubleshooting, then retry.
 - Separations keep running in the background while you use the app, and resume automatically after you quit and relaunch.
@@ -107,6 +108,7 @@ A segmented picker switches among:
 - `Original`: plays the imported source copy.
 - `Drum Boost`: live-mixes Drums and Drumless with the saved boost for this song.
 - `Drumless`: plays the drumless backing track.
+- `Drums`: plays the isolated drum track by itself.
 
 If a rendered source is missing (for example, the track has not finished separating), Backline Boost falls back to `Original` rather than failing silently.
 
@@ -242,6 +244,10 @@ Backline Boost migrates older project-root library snapshots into Application Su
 
 Use the `Retry render` action shown on the Library row or in the Player. The separation engine and its model are bundled with Backline Boost, so a persistent failure usually means a corrupt build — rebuild Backline Boost and retry.
 
+### Re-rendering A Working Track Fails
+
+If a `Re-render` of a track that was already `Ready` fails, the row shows `Render failed` while the previous Drums and Drumless files remain playable — Backline Boost only replaces them once a new render succeeds. Use `Retry render` to run it again; nothing is lost by trying again.
+
 ### Drum Boost Or Drumless Plays Original
 
 The separated assets are not ready for that track yet. Wait for its status to reach `Ready`, or use `Retry render` if it failed. Backline Boost falls back to `Original` so playback stays usable.
@@ -260,11 +266,11 @@ Folder import currently imports supported top-level audio files. It does not rec
 
 ## Current Limits
 
-The current prototype intentionally keeps some things narrow:
+Backline Boost intentionally keeps some things narrow:
 
-- `Import Track` uses a single-file picker.
+- `Import Track` opens a multi-file picker — pick one or several files at once.
 - `Import Folder` imports supported top-level audio files only.
-- Batch import and batch processing are not built yet.
+- Imports are processed one at a time, and rendering is queued serially — one track separates at a time even when several finish importing together.
 - Apple Music drag/drop imports only tracks with a real, DRM-free local audio file. DRM-protected downloads show a "Can't import this track" message; subscription-only items that aren't downloaded have no local file to import.
 - Exporting the current live `Drum Boost` mix to a standalone file is a future feature.
 

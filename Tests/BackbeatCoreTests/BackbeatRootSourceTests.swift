@@ -4,21 +4,28 @@ final class BackbeatRootSourceTests: XCTestCase {
     func testRootStartsBackgroundLoudnessAnalysisForMissingProfiles() throws {
         let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
 
-        XCTAssertTrue(source.contains("TrackLoudnessAnalyzer"))
         XCTAssertTrue(source.contains("analyzeMissingLoudnessProfiles"))
-        XCTAssertTrue(source.contains("store.setLoudnessProfile"))
+
+        // The queue's analyze/commit closures live only in BackbeatApp.init —
+        // a view-side fallback copy would drift from the production wiring.
+        // (The version check `TrackLoudnessAnalyzerVersion` stays in the
+        // sweep filter, so pin the analyzer CONSTRUCTION specifically.)
+        let app = try readSource("Sources/Backbeat/App/BackbeatApp.swift")
+        XCTAssertTrue(app.contains("TrackLoudnessAnalyzer(settings:"))
+        XCTAssertTrue(app.contains("store.setLoudnessProfile"))
+        XCTAssertFalse(source.contains("TrackLoudnessAnalyzer(settings:"))
     }
 
-    func testRootDebouncesLibrarySavesOffTheMainActor() throws {
-        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+    func testPersistenceCoordinatorDebouncesLibrarySavesOffTheMainActor() throws {
+        let source = try readSource("Sources/BackbeatCore/Stores/LibraryPersistenceCoordinator.swift")
 
-        XCTAssertTrue(source.contains("pendingLibrarySave?.cancel()"))
+        XCTAssertTrue(source.contains("pendingSave?.cancel()"))
         XCTAssertTrue(source.contains("try await Task.sleep"))
         XCTAssertTrue(source.contains("Task.detached"))
         XCTAssertTrue(source.contains("writer.write(snapshot, generation: generation)"))
         XCTAssertFalse(
             source.contains("try persistence.save(store: store)"),
-            "root view saves must go through the debounced generation-stamped writer, not a synchronous main-actor write per change"
+            "the coordinator must save through the debounced generation-stamped writer, not a synchronous main-actor write per change"
         )
     }
 
@@ -51,6 +58,29 @@ final class BackbeatRootSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("renderQueue.enqueueMissingRenders()"))
     }
 
+    func testLaunchReconcilesLibraryFilesBeforeTheRenderScan() throws {
+        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+
+        let reconcile = try XCTUnwrap(
+            source.range(of: "store.reconcileLibraryFiles()"),
+            "Statuses must be re-derived from disk before anything consumes them (D-107)."
+        )
+        let scan = try XCTUnwrap(source.range(of: "renderQueue.enqueueMissingRenders()"))
+        XCTAssertLessThan(
+            reconcile.lowerBound, scan.lowerBound,
+            "Reconciliation must run before the launch scan, or the scan sees a stale `.ready` whose files are gone."
+        )
+    }
+
+    func testLoudnessSweepSkipsTracksWithAMissingSourceFile() throws {
+        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+
+        XCTAssertTrue(
+            source.contains("guard track.status != .sourceMissing else { return false }"),
+            "A missing source is a guaranteed-failing decode every launch (D-107)."
+        )
+    }
+
     func testRootSurfacesLibraryLoadRecoveryMessage() throws {
         let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
 
@@ -58,12 +88,33 @@ final class BackbeatRootSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("Library could not be fully loaded"))
     }
 
+    func testRootPresentsPlaybackFailures() throws {
+        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+
+        XCTAssertTrue(source.contains(".alert(\"Playback failed\", isPresented: playbackFailureBinding)"))
+        XCTAssertTrue(source.contains("store.playbackFailure?.userMessage"))
+        XCTAssertTrue(source.contains("store.playbackFailure = nil"))
+    }
+
     func testAppFlushesLibraryOnTermination() throws {
         let source = try readSource("Sources/Backbeat/App/BackbeatApp.swift")
 
         XCTAssertTrue(source.contains("applicationWillTerminate"))
         XCTAssertTrue(source.contains("persistLibraryOnTerminate"))
-        XCTAssertTrue(source.contains("libraryWriter.write(LibrarySnapshot(store: store)"))
+        XCTAssertTrue(source.contains("persistenceCoordinator.flushForTermination()"))
+    }
+
+    func testMainSceneIsASingleWindowNotAWindowGroup() throws {
+        let source = try readSource("Sources/Backbeat/App/BackbeatApp.swift")
+
+        XCTAssertTrue(
+            source.contains("Window(\"Backline Boost\", id: \"main\")"),
+            "One library session must have exactly one playback/import owner (D-103)."
+        )
+        XCTAssertFalse(
+            source.contains("WindowGroup"),
+            "WindowGroup restores Cmd+N: a second main window creates a second engine set and reopens the cross-window import TOCTOU (D-103 tripwire)."
+        )
     }
 
     func testPlayerWaveformLoadIgnoresCancelledTasks() throws {
@@ -105,6 +156,16 @@ final class BackbeatRootSourceTests: XCTestCase {
         )
     }
 
+    func testAppWiresInSessionRenderRecoveryToTheQueue() throws {
+        let source = try readSource("Sources/Backbeat/App/BackbeatApp.swift")
+
+        XCTAssertTrue(
+            source.contains("store.onRenderRecoveryNeeded = { [weak renderQueue]"),
+            "In-session recovery must start the replacement render immediately, not strand the track until the next launch (COR-004)."
+        )
+        XCTAssertTrue(source.contains("renderQueue?.enqueue(trackID)"))
+    }
+
     func testAppPersistsBackgroundRenderCompletionsWhileWindowClosed() throws {
         let source = try readSource("Sources/Backbeat/App/BackbeatApp.swift")
 
@@ -112,44 +173,57 @@ final class BackbeatRootSourceTests: XCTestCase {
             source.contains("renderQueue.onLibraryChanged"),
             "A render completing while the window is closed must still schedule a save; the view's .onChange trigger is gone once its view dies (F8)."
         )
-        XCTAssertTrue(source.contains("scheduleBackgroundLibrarySave"))
+        XCTAssertTrue(source.contains("coordinator.noteLibraryChanged()"))
+        XCTAssertFalse(
+            source.contains("scheduleBackgroundLibrarySave"),
+            "The duplicated app-delegate debounce is gone; the coordinator is the single save path (CLR-003)."
+        )
     }
 
     func testLibrarySaveFailuresAreLoggedAndSurfacedNotSwallowed() throws {
-        let root = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+        let coordinator = try readSource("Sources/BackbeatCore/Stores/LibraryPersistenceCoordinator.swift")
         XCTAssertTrue(
-            root.contains("DebugLog.persistence"),
-            "A failed debounced save must be logged, not swallowed by print() (F12)."
+            coordinator.contains("DebugLog.persistence"),
+            "A failed debounced save, and a failed terminate flush, must be logged instead of swallowed by print() (F12)."
         )
         XCTAssertTrue(
-            root.contains("librarySaveFailureMessage"),
+            coordinator.contains("saveFailureMessage"),
             "Repeated save failures must surface a banner so silent data loss is visible (F12)."
         )
         XCTAssertFalse(
-            root.contains("print(\"Backbeat library save failed"),
+            coordinator.contains("print(\"Backbeat library save failed"),
             "The print()-only failure path is replaced by logging plus a banner."
+        )
+
+        let root = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+        XCTAssertTrue(
+            root.contains("persistenceCoordinator.saveFailureMessage"),
+            "The alert must read the coordinator's failure message, not a view-local one."
+        )
+        XCTAssertFalse(
+            root.contains("scheduleLibrarySave"),
+            "Library saves are debounced by the coordinator now, not a view-local scheduler."
+        )
+    }
+
+    func testLoudnessSweepRoutesThroughTheDedupedQueueInsteadOfCancelAndRestart() throws {
+        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
+
+        XCTAssertFalse(
+            source.contains("loudnessAnalysisTask"),
+            "The cancel-and-restart Task is gone: its replacement scan re-included a track whose analysis was still running, forcing concurrent duplicate full-track decodes (EFF-001, formerly guarded by F15's commit-even-after-cancellation fix)."
+        )
+        XCTAssertTrue(
+            source.contains("loudnessAnalysisQueue.enqueue(items)"),
+            "The sweep must hand its pending list to the serial, deduplicated queue rather than cancelling and rescanning."
         )
 
         let app = try readSource("Sources/Backbeat/App/BackbeatApp.swift")
         XCTAssertTrue(
-            app.contains("DebugLog.persistence"),
-            "The terminate flush must log a write failure instead of swallowing it with try? (F12)."
+            app.contains("LoudnessAnalysisQueue("),
+            "The commit closure is now provided at construction (BackbeatApp.init), not wired later via setCommit."
         )
-    }
-
-    func testLoudnessAnalysisCommitsComputedProfilesEvenAfterCancellation() throws {
-        let source = try readSource("Sources/Backbeat/Views/BackbeatRootView.swift")
-        let taskStart = try XCTUnwrap(
-            source.range(of: "loudnessAnalysisTask = Task"),
-            "loudness analysis task missing"
-        )
-        let body = source[taskStart.lowerBound...]
-        let cancellationGuards = body.components(separatedBy: "guard !Task.isCancelled").count - 1
-        XCTAssertEqual(
-            cancellationGuards,
-            1,
-            "Only the pre-analyze cancellation guard may remain; the post-analyze guard discarded a fully computed profile and forced a duplicate decode (F15)."
-        )
+        XCTAssertTrue(app.contains("store.setLoudnessProfile"))
     }
 
     func testLaunchStartsDurationBackfillSweepForUnresolvedTracks() throws {
@@ -162,6 +236,10 @@ final class BackbeatRootSourceTests: XCTestCase {
         XCTAssertTrue(
             source.contains("!$0.isDurationResolved"),
             "The sweep must only collect tracks whose duration has not been precisely resolved yet, or every launch re-probes the whole library."
+        )
+        XCTAssertTrue(
+            source.contains("!$0.isDurationResolved && $0.status != .sourceMissing"),
+            "Probing a dead source path burns the one-shot isDurationResolved flag on a .keptEstimate — skip .sourceMissing like the loudness sweep does."
         )
     }
 
@@ -178,12 +256,12 @@ final class BackbeatRootSourceTests: XCTestCase {
             "each resolution must apply through the single MainActor entry point on LibraryStore"
         )
         let persist = try XCTUnwrap(
-            source.range(of: "persistLibrary()", range: resolveGuard.upperBound..<source.endIndex),
+            source.range(of: "persistenceCoordinator.noteLibraryChanged()", range: resolveGuard.upperBound..<source.endIndex),
             "a successful apply must persist the library"
         )
         XCTAssertLessThan(
             resolveGuard.lowerBound, persist.lowerBound,
-            "persistLibrary() must be gated behind the apply's return value so a no-op apply doesn't burn a debounced save cycle"
+            "persistenceCoordinator.noteLibraryChanged() must be gated behind the apply's return value so a no-op apply doesn't burn a debounced save cycle"
         )
     }
 

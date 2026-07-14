@@ -256,6 +256,69 @@ final class LibraryTrackQueryTests: XCTestCase {
         XCTAssertEqual(visible.map(\.title), ["Blue in Green", "Blue Train"])
     }
 
+    // MARK: - Multi-add ordering (COR-011a)
+
+    func testOrderedSelectionMatchesPickerOrderForTitleAscending() {
+        let charlie = track(title: "Charlie")
+        let alpha = track(title: "Alpha")
+        let tracks = [charlie, alpha]
+
+        let ordered = LibraryTrackQuery.orderedSelection(
+            Set([charlie.id, alpha.id]),
+            in: tracks,
+            sort: LibrarySortOrder(field: .title, ascending: true)
+        )
+
+        XCTAssertEqual(ordered, [alpha.id, charlie.id])
+    }
+
+    func testOrderedSelectionMatchesPickerOrderForTitleDescending() {
+        let charlie = track(title: "Charlie")
+        let alpha = track(title: "Alpha")
+        let tracks = [charlie, alpha]
+
+        let ordered = LibraryTrackQuery.orderedSelection(
+            Set([charlie.id, alpha.id]),
+            in: tracks,
+            sort: LibrarySortOrder(field: .title, ascending: false)
+        )
+
+        XCTAssertEqual(ordered, [charlie.id, alpha.id])
+    }
+
+    func testOrderedSelectionExcludesUnselectedTracks() {
+        let alpha = track(title: "Alpha")
+        let bravo = track(title: "Bravo")
+        let charlie = track(title: "Charlie")
+        let tracks = [alpha, bravo, charlie]
+
+        let ordered = LibraryTrackQuery.orderedSelection(
+            Set([charlie.id]),
+            in: tracks,
+            sort: LibrarySortOrder(field: .title, ascending: true)
+        )
+
+        XCTAssertEqual(ordered, [charlie.id])
+    }
+
+    func testOrderedSelectionReturnsEmptyForEmptySelection() {
+        let tracks = [track(title: "Alpha"), track(title: "Bravo")]
+
+        let ordered = LibraryTrackQuery.orderedSelection(Set(), in: tracks, sort: .default)
+
+        XCTAssertEqual(ordered, [])
+    }
+
+    func testOrderedSelectionOfFullLibraryEqualsVisibleTracksOrder() {
+        let tracks = [track(title: "Charlie"), track(title: "Alpha"), track(title: "Bravo")]
+        let sort = LibrarySortOrder(field: .title, ascending: true)
+
+        let ordered = LibraryTrackQuery.orderedSelection(Set(tracks.map(\.id)), in: tracks, sort: sort)
+        let visibleIDs = LibraryTrackQuery.visibleTracks(in: tracks, sort: sort, searchText: "").map(\.id)
+
+        XCTAssertEqual(ordered, visibleIDs)
+    }
+
     // MARK: - Fixtures
 
     private func track(

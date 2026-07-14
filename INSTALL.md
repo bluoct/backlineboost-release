@@ -8,6 +8,7 @@ Backline Boost is currently a local macOS app built from source. There is not ye
 
 - macOS 14 or newer.
 - Xcode or Apple Command Line Tools with a Swift 6 toolchain.
+- The Metal Toolchain, installed with `xcodebuild -downloadComponent MetalToolchain` — needed to compile MLX's Metal kernel library on the first build.
 - Local audio files to import. Backline Boost does not import or stream protected Apple Music, Spotify, or other subscription-library tracks.
 - Network access on the **first** build only, to fetch the drum-separation model checkpoint (~84 MB). It is verified against a pinned SHA-256, cached per machine, and bundled into the app — the app itself never accesses the network.
 
@@ -124,6 +125,14 @@ Install or select an Xcode version with Swift 6 support:
 ```sh
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 swift --version
+```
+
+### Build Fails With Missing Metal Toolchain
+
+MLX compiles a Metal kernel library on the first build. If the build fails looking for it, install the Metal Toolchain:
+
+```sh
+xcodebuild -downloadComponent MetalToolchain
 ```
 
 ### App Launches But Render Fails

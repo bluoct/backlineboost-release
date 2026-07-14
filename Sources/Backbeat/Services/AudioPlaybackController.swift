@@ -95,7 +95,8 @@ final class AudioPlaybackController {
         track: BackbeatTrack,
         store: LibraryStore,
         source: PlaybackSource,
-        startElapsed: TimeInterval? = nil
+        startElapsed: TimeInterval? = nil,
+        isRenderFallback: Bool = false
     ) {
         guard let asset = store.playbackAsset(for: track, preferredSource: source) else { return }
         let resumeTime = startElapsed ?? (mode == .render(track.id) || store.nowPlayingTrackID == track.id ? store.playbackElapsed : 0)
@@ -124,6 +125,9 @@ final class AudioPlaybackController {
             store.setActiveQueueSource(source)
             store.setPlaybackElapsed(boundedResumeTime, duration: transportDuration(for: track))
             store.setPlaybackPlaying(true)
+            if asset.effectiveSource == .original {
+                store.noteOriginalSourceRestored(for: track.id)
+            }
             // One UI-progress cadence — A/B wrap enforcement lives in the
             // engines' pre-scheduled chain now, D-094.
             startTimer(interval: 0.2) { [weak self, weak store, track] in
@@ -134,9 +138,11 @@ final class AudioPlaybackController {
             stopCurrent()
             // A rendered file may have been deleted on disk; recover the dangling
             // record and fall back to Original instead of dead-ending on a raw
-            // Foundation error (F7).
-            if source != .original, store.recoverMissingRenderFiles(for: track.id) {
-                playTrack(track: track, store: store, source: .original, startElapsed: boundedResumeTime)
+            // Foundation error (F7). Classification keys on what actually
+            // played — a render-preferring source can resolve to the Original
+            // when no renders exist yet.
+            if asset.effectiveSource != .original, store.recoverMissingRenderFiles(for: track.id) {
+                playTrack(track: track, store: store, source: .original, startElapsed: boundedResumeTime, isRenderFallback: true)
                 return
             }
             renderPlaybackBackend = nil
@@ -145,7 +151,13 @@ final class AudioPlaybackController {
             store.setActiveQueueSource(source)
             store.setPlaybackElapsed(boundedResumeTime, duration: transportDuration(for: track))
             store.setPlaybackPlaying(false)
-            store.playbackErrorMessage = error.localizedDescription
+            if asset.effectiveSource == .original, store.noteOriginalSourceMissing(for: track.id) {
+                store.playbackFailure = .sourceFileMissing
+            } else {
+                store.playbackFailure = isRenderFallback
+                    ? .fallbackFailed
+                    : (asset.effectiveSource == .original ? .originalUnplayable : .renderUnplayable)
+            }
         }
     }
 
@@ -179,7 +191,7 @@ final class AudioPlaybackController {
             if store.recoverMissingRenderFiles(for: track.id) {
                 renderPlaybackBackend = nil
                 mode = nil
-                playTrack(track: track, store: store, source: .original, startElapsed: startElapsed)
+                playTrack(track: track, store: store, source: .original, startElapsed: startElapsed, isRenderFallback: true)
                 return
             }
             renderPlaybackBackend = nil
@@ -188,7 +200,7 @@ final class AudioPlaybackController {
             store.setActiveQueueSource(.drumBoost)
             store.setPlaybackElapsed(startElapsed, duration: transportDuration(for: track))
             store.setPlaybackPlaying(false)
-            store.playbackErrorMessage = error.localizedDescription
+            store.playbackFailure = .renderUnplayable
         }
     }
 
@@ -251,6 +263,16 @@ final class AudioPlaybackController {
     }
 
     func seekRender(toProgress progress: Double, track: BackbeatTrack, store: LibraryStore) {
+        // A scrub may move the transport when the scrubbed track owns the
+        // live session (mode is set exclusively by playback starts, D-100),
+        // or when no session is live at all — a free transport may be
+        // anchored to any track to pick a start point, and a stopped
+        // transport re-anchors for replay. The one refused case is a
+        // bystander scrub DURING another track's live session: that was the
+        // COR-002 hijack (COR-002, D-108).
+        let ownsLiveSession = mode == .render(track.id)
+        let transportIsFree = !store.isPlaybackSessionActive
+        guard ownsLiveSession || transportIsFree else { return }
         let targetElapsed = PlaybackScrubPosition.elapsed(progress: progress, duration: transportDuration(for: track))
         store.nowPlayingTrackID = track.id
 
@@ -265,29 +287,47 @@ final class AudioPlaybackController {
         store.setPlaybackElapsed(targetElapsed, duration: transportDuration(for: track))
     }
 
+    // A bystander's practice edit must not retarget the live session: the
+    // practice loop and speed are GLOBAL store state that resolves to the
+    // live engine (D-100), so the EDIT itself is refused unless the edited
+    // track owns the session or the transport is free — the seekRender rule
+    // (D-108), extended to loop bounds, mode, and speed after owner QA
+    // (2026-07-13) caught B's loop-marker drag yanking A's playhead into
+    // B's loop range.
+    private func allowsPracticeEdit(track: BackbeatTrack, store: LibraryStore) -> Bool {
+        let ownsLiveSession = mode == .render(track.id)
+        let transportIsFree = !store.isPlaybackSessionActive
+        return ownsLiveSession || transportIsFree
+    }
+
     func setPracticeSpeed(_ speed: Double, track: BackbeatTrack, store: LibraryStore) {
+        guard allowsPracticeEdit(track: track, store: store) else { return }
         store.setPracticeSpeed(speed)
         singleFileEngine.setSpeed(store.practiceSpeed)
         twoTrackMixEngine.setSpeed(store.practiceSpeed)
     }
 
     func stepPracticeSpeed(by delta: Double, track: BackbeatTrack, store: LibraryStore) {
+        guard allowsPracticeEdit(track: track, store: store) else { return }
         store.stepPracticeSpeed(by: delta)
         singleFileEngine.setSpeed(store.practiceSpeed)
         twoTrackMixEngine.setSpeed(store.practiceSpeed)
     }
 
     func setPracticeLoopMode(_ mode: PracticeLoopMode, track: BackbeatTrack, store: LibraryStore) {
+        guard allowsPracticeEdit(track: track, store: store) else { return }
         store.setPracticeLoopMode(mode, duration: transportDuration(for: track))
         syncEngineSectionLoop(track: track, store: store)
     }
 
     func setPracticeLoopStart(_ elapsed: TimeInterval, track: BackbeatTrack, store: LibraryStore) {
+        guard allowsPracticeEdit(track: track, store: store) else { return }
         store.setPracticeLoopStart(elapsed, duration: transportDuration(for: track))
         syncEngineSectionLoop(track: track, store: store)
     }
 
     func setPracticeLoopEnd(_ elapsed: TimeInterval, track: BackbeatTrack, store: LibraryStore) {
+        guard allowsPracticeEdit(track: track, store: store) else { return }
         store.setPracticeLoopEnd(elapsed, duration: transportDuration(for: track))
         syncEngineSectionLoop(track: track, store: store)
     }
@@ -304,6 +344,7 @@ final class AudioPlaybackController {
     }
 
     func clearPracticeLoop(track: BackbeatTrack, store: LibraryStore) {
+        guard allowsPracticeEdit(track: track, store: store) else { return }
         store.clearPracticeLoop()
         syncEngineSectionLoop(track: track, store: store)
     }
@@ -322,9 +363,12 @@ final class AudioPlaybackController {
 
     func setDrumMixBoostDB(_ boostDB: Double, track: BackbeatTrack, store: LibraryStore) {
         store.setDrumMixBoostDB(boostDB, for: track.id)
-        if let updatedTrack = store.track(id: track.id) {
-            twoTrackMixEngine.setMixSettings(updatedTrack.drumMixSettings)
-        }
+        // Push to the live engine only when the edited track owns the session
+        // (D-100 mode resolution; D-060 per-track mix): editing an inspected
+        // track's saved boost must not bleed into another track's live audio.
+        guard case .render(let activeTrackID) = mode, activeTrackID == track.id,
+              let updatedTrack = store.track(id: track.id) else { return }
+        twoTrackMixEngine.setMixSettings(updatedTrack.drumMixSettings)
     }
 
     func stopRender(track: BackbeatTrack, store: LibraryStore) {

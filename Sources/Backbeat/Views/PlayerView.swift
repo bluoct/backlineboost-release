@@ -207,6 +207,11 @@ private struct PlayerDetailView: View {
                         track: track,
                         progress: detailPlaybackProgress,
                         envelope: waveformEnvelope,
+                        // Mirrors the controller's practice-edit ownership
+                        // guard (D-108, extended at owner QA 2026-07-13): a
+                        // free transport edits anything; a live session only
+                        // its own track — scrub, loop bounds, and speed alike.
+                        isPracticeEditingEnabled: !store.isPlaybackSessionActive || store.nowPlayingTrackID == track.id,
                         onScrub: { progress in
                             playback.seekRender(toProgress: progress, track: track, store: store)
                         },

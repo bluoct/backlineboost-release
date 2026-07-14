@@ -1071,6 +1071,291 @@ final class LibraryPersistenceTests: XCTestCase {
         XCTAssertFalse(store.isPlaylistsSectionCollapsed, "the malformed Bool falls back to its default")
         XCTAssertNotNil(store.libraryLoadRecoveryMessage)
     }
+
+    // MARK: - COR-014 reference sanitization
+
+    func testLoadStoreOrDefaultRepairsAllDanglingReferencesToADroppedTrackAndResavesClean() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-persistence-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = root.appendingPathComponent("library.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let keptTrack = BackbeatTrack(
+            title: "Kept",
+            duration: 200,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("sources/kept.m4a")
+        )
+        let droppedTrack = BackbeatTrack(
+            title: "Dropped",
+            duration: 180,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("sources/dropped.m4a")
+        )
+        let playlist = BackbeatPlaylist(
+            name: "Practice",
+            trackIDs: [keptTrack.id, droppedTrack.id],
+            defaultPlaybackSource: .drumless,
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let queue = PlaybackQueue(
+            playlistID: playlist.id,
+            trackIDs: [keptTrack.id, droppedTrack.id],
+            currentIndex: 1,
+            preferredSource: .drumless
+        )
+        let snapshot = LibrarySnapshot(
+            tracks: [keptTrack, droppedTrack],
+            selectedTrackID: droppedTrack.id,
+            nowPlayingTrackID: droppedTrack.id,
+            playlists: [playlist],
+            selectedPlaylistID: playlist.id,
+            activeQueue: queue,
+            volume: 0.8
+        )
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+        try persistence.save(snapshot)
+
+        // Corrupt only the dropped track's element so the healthy track and
+        // every scalar reference to the dropped ID survive decode verbatim —
+        // exactly the COR-014 shape: a lossy decode drops a track while its
+        // ID lives on in selectedTrackID/nowPlayingTrackID/playlist/queue.
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        var tracks = try XCTUnwrap(json["tracks"] as? [[String: Any]])
+        let droppedIndex = try XCTUnwrap(tracks.firstIndex { ($0["id"] as? String) == droppedTrack.id.uuidString })
+        tracks[droppedIndex] = ["bogus": true]
+        json["tracks"] = tracks
+        try JSONSerialization.data(withJSONObject: json).write(to: snapshotURL)
+
+        let store = persistence.loadStoreOrDefault()
+
+        XCTAssertEqual(store.tracks.map(\.id), [keptTrack.id])
+        XCTAssertNil(store.selectedTrackID, "a selectedTrackID pointing at a dropped track must be repaired")
+        XCTAssertNil(store.nowPlayingTrackID, "a nowPlayingTrackID pointing at a dropped track must be repaired")
+        XCTAssertEqual(store.playlists.first?.trackIDs, [keptTrack.id], "the dropped track's ID must not survive in the playlist")
+        XCTAssertEqual(store.activeQueue?.trackIDs, [keptTrack.id])
+        let message = try XCTUnwrap(store.libraryLoadRecoveryMessage)
+        XCTAssertTrue(message.contains("repaired"), "the recovery message must mention repaired references")
+
+        // Sidebar-count agreement: every surviving playlist trackID must
+        // resolve, or the sidebar count disagrees with the detail view.
+        for playlist in store.playlists {
+            XCTAssertEqual(
+                playlist.trackIDs.count,
+                playlist.trackIDs.compactMap { store.track(id: $0) }.count
+            )
+        }
+
+        // Resave-no-dangling: a fresh snapshot taken from the repaired store
+        // must carry the dropped track's ID nowhere.
+        let resnapshot = LibrarySnapshot(store: store)
+        XCTAssertNotEqual(resnapshot.selectedTrackID, droppedTrack.id)
+        XCTAssertNotEqual(resnapshot.nowPlayingTrackID, droppedTrack.id)
+        XCTAssertFalse(resnapshot.playlists.contains { $0.trackIDs.contains(droppedTrack.id) })
+        XCTAssertFalse(resnapshot.activeQueue?.trackIDs.contains(droppedTrack.id) ?? false)
+    }
+
+    func testMakeStoreReanchorsDuplicateIDQueueCursorByPositionNotFirstIndex() throws {
+        // COR-006's bug class: legacy snapshots decode queues verbatim and may
+        // hold duplicate IDs. With the cursor on a LATER duplicate, a
+        // firstIndex re-anchor would snap it to the first occurrence.
+        let trackA = BackbeatTrack(title: "A", duration: 100, status: .ready, sourceURL: URL(fileURLWithPath: "/tmp/a.m4a"))
+        let dangling = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let queue = PlaybackQueue(
+            trackIDs: [trackA.id, dangling, trackA.id],
+            currentIndex: 2,
+            preferredSource: .drumBoost
+        )
+        let snapshot = LibrarySnapshot(
+            tracks: [trackA],
+            selectedTrackID: nil,
+            activeQueue: queue,
+            volume: 0.8
+        )
+
+        let diagnostics = LibraryDecodeDiagnostics()
+        let store = snapshot.makeStore(diagnostics: diagnostics)
+
+        XCTAssertEqual(store.activeQueue?.trackIDs, [trackA.id, trackA.id])
+        XCTAssertEqual(
+            store.activeQueue?.currentIndex, 1,
+            "the cursor must stay on ITS occurrence (index shifted by removals ahead of it), not snap to the first duplicate"
+        )
+        XCTAssertGreaterThan(diagnostics.repairedReferenceCount, 0)
+    }
+
+    func testMakeStoreDropsAnOriginallyEmptyQueueWithoutRecordingARepair() throws {
+        // An empty-trackIDs queue can only reach us from a legacy or
+        // externally edited file; normalizing it to nil is not a repair, and
+        // recording one would back up and alert over a healthy library.
+        let track = BackbeatTrack(title: "A", duration: 100, status: .ready, sourceURL: URL(fileURLWithPath: "/tmp/a.m4a"))
+        let snapshot = LibrarySnapshot(
+            tracks: [track],
+            selectedTrackID: track.id,
+            activeQueue: PlaybackQueue(trackIDs: [], preferredSource: .drumBoost),
+            volume: 0.8
+        )
+
+        let diagnostics = LibraryDecodeDiagnostics()
+        let store = snapshot.makeStore(diagnostics: diagnostics)
+
+        XCTAssertNil(store.activeQueue)
+        XCTAssertEqual(diagnostics.repairedReferenceCount, 0, "nothing was dangling — the load must read as clean")
+    }
+
+    func testMakeStoreRepairsAQueuePlaylistIDPointingAtADroppedPlaylist() throws {
+        let track = BackbeatTrack(title: "A", duration: 100, status: .ready, sourceURL: URL(fileURLWithPath: "/tmp/a.m4a"))
+        let danglingPlaylistID = UUID(uuidString: "88888888-7777-6666-5555-444444444444")!
+        let queue = PlaybackQueue(
+            playlistID: danglingPlaylistID,
+            trackIDs: [track.id],
+            preferredSource: .drumBoost
+        )
+        let snapshot = LibrarySnapshot(
+            tracks: [track],
+            selectedTrackID: nil,
+            activeQueue: queue,
+            volume: 0.8
+        )
+
+        let diagnostics = LibraryDecodeDiagnostics()
+        let store = snapshot.makeStore(diagnostics: diagnostics)
+
+        XCTAssertNil(
+            store.activeQueue?.playlistID,
+            "a queue claiming a playlist that no longer exists must be repaired to an orphan queue, not persist the dangling affiliation"
+        )
+        XCTAssertEqual(store.activeQueue?.trackIDs, [track.id])
+        XCTAssertGreaterThan(diagnostics.repairedReferenceCount, 0)
+    }
+
+    func testLoadStoreOrDefaultPersistsTheRepairedSnapshotImmediately() throws {
+        // The repaired state must reach disk during the load itself: waiting
+        // for the next debounced save means a crash replays the damage alert
+        // and mints another corrupt-backup on every launch.
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-resave-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let snapshotURL = tempDirectory.appendingPathComponent("library.json")
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+
+        let track = BackbeatTrack(title: "A", duration: 100, status: .ready, sourceURL: URL(fileURLWithPath: "/tmp/a.m4a"))
+        let danglingID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let snapshot = LibrarySnapshot(
+            tracks: [track],
+            selectedTrackID: danglingID,
+            volume: 0.8
+        )
+        try persistence.save(snapshot)
+
+        let store = persistence.loadStoreOrDefault()
+
+        XCTAssertNotNil(store.libraryLoadRecoveryMessage)
+        let reloaded = try XCTUnwrap(persistence.load())
+        XCTAssertNil(
+            reloaded.selectedTrackID,
+            "the on-disk file must already hold the repaired state — a second launch with no interim save must load clean"
+        )
+
+        // And the second launch must indeed be clean: no alert, no new backup.
+        let secondStore = persistence.loadStoreOrDefault()
+        XCTAssertNil(secondStore.libraryLoadRecoveryMessage)
+    }
+
+    func testMakeStoreRepairsDanglingReferencesEvenWhenNoTrackWasDropped() throws {
+        // Healthy tracks array (nothing malformed) but scalar references to
+        // an ID that was never in `tracks` — decode diagnostics stay at
+        // zero; only the reference-sanitization pass should flag this.
+        let track = BackbeatTrack(
+            title: "Healthy",
+            duration: 180,
+            status: .ready,
+            sourceURL: URL(fileURLWithPath: "/tmp/healthy.m4a")
+        )
+        let danglingTrackID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        let danglingPlaylistID = UUID(uuidString: "88888888-7777-6666-5555-444444444444")!
+        let playlist = BackbeatPlaylist(
+            name: "Practice",
+            trackIDs: [track.id, danglingTrackID],
+            defaultPlaybackSource: .drumless
+        )
+        let snapshot = LibrarySnapshot(
+            tracks: [track],
+            selectedTrackID: danglingTrackID,
+            nowPlayingTrackID: danglingTrackID,
+            playlists: [playlist],
+            selectedPlaylistID: danglingPlaylistID,
+            volume: 0.8
+        )
+
+        let diagnostics = LibraryDecodeDiagnostics()
+        let store = snapshot.makeStore(diagnostics: diagnostics)
+
+        XCTAssertNil(store.selectedTrackID)
+        XCTAssertNil(store.nowPlayingTrackID)
+        XCTAssertNil(store.selectedPlaylistID)
+        XCTAssertEqual(store.playlists.first?.trackIDs, [track.id])
+        XCTAssertGreaterThan(diagnostics.repairedReferenceCount, 0)
+        XCTAssertEqual(diagnostics.droppedTrackCount, 0)
+        XCTAssertEqual(diagnostics.defaultedFieldCount, 0)
+    }
+
+    func testLoadStoreOrDefaultReportsRepairedReferencesWithoutDroppingAnyTrack() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backbeat-persistence-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = root.appendingPathComponent("library.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let keptTrack = BackbeatTrack(
+            title: "Healthy",
+            duration: 180,
+            status: .ready,
+            sourceURL: root.appendingPathComponent("sources/healthy.m4a")
+        )
+        let playlist = BackbeatPlaylist(
+            name: "Practice",
+            trackIDs: [keptTrack.id],
+            defaultPlaybackSource: .drumless,
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20)
+        )
+        let snapshot = LibrarySnapshot(
+            tracks: [keptTrack],
+            selectedTrackID: keptTrack.id,
+            playlists: [playlist],
+            volume: 0.8
+        )
+        let persistence = LibraryPersistence(snapshotURL: snapshotURL)
+        try persistence.save(snapshot)
+
+        // Hand-inject dangling scalar references — every track object
+        // decodes fine, so droppedTrackCount/defaultedFieldCount stay 0;
+        // only the reference-sanitization pass in makeStore should flag
+        // this load as lossy.
+        let danglingTrackID = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        json["selectedTrackID"] = danglingTrackID.uuidString
+        var playlists = try XCTUnwrap(json["playlists"] as? [[String: Any]])
+        var playlistTrackIDs = try XCTUnwrap(playlists[0]["trackIDs"] as? [String])
+        playlistTrackIDs.append(danglingTrackID.uuidString)
+        playlists[0]["trackIDs"] = playlistTrackIDs
+        json["playlists"] = playlists
+        try JSONSerialization.data(withJSONObject: json).write(to: snapshotURL)
+
+        let store = persistence.loadStoreOrDefault()
+
+        XCTAssertEqual(store.tracks.map(\.id), [keptTrack.id], "no track object was malformed; none should be dropped")
+        XCTAssertNil(store.selectedTrackID, "a selectedTrackID pointing at a track that isn't in tracks must be repaired")
+        XCTAssertEqual(store.playlists.first?.trackIDs, [keptTrack.id], "the dangling playlist trackID must be filtered")
+        let message = try XCTUnwrap(store.libraryLoadRecoveryMessage)
+        XCTAssertTrue(message.contains("repaired"))
+    }
 }
 
 // Retired schema keys: legacy fixtures still carry preview state so the

@@ -250,22 +250,34 @@ public struct BoostedDrumsRenderer {
         try Self.requireNonEmptyStems(stems)
 
         await progress?(.mixingDrumsTrack)
-        try await stemMixdown.writeDrums(
-            stems: stems,
-            outputURL: drumsOutputURL,
-            bitrate: bitrate
-        )
-        await progress?(.mixingDrumlessTrack)
-        try await stemMixdown.writeDrumless(
-            stems: stems,
-            outputURL: drumlessOutputURL,
-            bitrate: bitrate
-        )
-        await progress?(.finalizingOutput)
-        try RenderCommandRunner.requireNonEmptyFile(drumsOutputURL)
-        try RenderCommandRunner.requireNonEmptyFile(drumlessOutputURL)
-        try removeSupersededRenders(keeping: drumsOutputURL, for: track, isSuperseded: BoostedDrumsRenderPlan.isDrumsOutput)
-        try removeSupersededRenders(keeping: drumlessOutputURL, for: track, isSuperseded: BoostedDrumsRenderPlan.isDrumlessOutput)
+        do {
+            try await stemMixdown.writeDrums(
+                stems: stems,
+                outputURL: drumsOutputURL,
+                bitrate: bitrate
+            )
+            await progress?(.mixingDrumlessTrack)
+            try await stemMixdown.writeDrumless(
+                stems: stems,
+                outputURL: drumlessOutputURL,
+                bitrate: bitrate
+            )
+            await progress?(.finalizingOutput)
+            try RenderCommandRunner.requireNonEmptyFile(drumsOutputURL)
+            try RenderCommandRunner.requireNonEmptyFile(drumlessOutputURL)
+        } catch {
+            // A half-written pair is referenced by no record (promotion runs only
+            // on success) and would leak into the renders folder forever (R3).
+            try? FileManager.default.removeItem(at: drumsOutputURL)
+            try? FileManager.default.removeItem(at: drumlessOutputURL)
+            throw error
+        }
+        // Best-effort: the new pair is complete and valid at this point — a
+        // janitorial failure (renders volume unmounted mid-render, a locked
+        // superseded file) must not fail the render, strand the new outputs
+        // recordless, or dangle the old records it may already have half-swept.
+        try? removeSupersededRenders(keeping: drumsOutputURL, for: track, isSuperseded: BoostedDrumsRenderPlan.isDrumsOutput)
+        try? removeSupersededRenders(keeping: drumlessOutputURL, for: track, isSuperseded: BoostedDrumsRenderPlan.isDrumlessOutput)
         await progress?(.complete)
         return PracticeRenderResult(drumsURL: drumsOutputURL, drumlessURL: drumlessOutputURL)
     }

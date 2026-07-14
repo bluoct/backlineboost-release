@@ -164,7 +164,7 @@ final class AudioPlaybackControllerSourceTests: XCTestCase {
 
         let playTrackBody = try methodBody(
             source,
-            signature: "func playTrack(\n        track: BackbeatTrack,\n        store: LibraryStore,\n        source: PlaybackSource,\n        startElapsed: TimeInterval? = nil\n    )"
+            signature: "func playTrack(\n        track: BackbeatTrack,\n        store: LibraryStore,\n        source: PlaybackSource,\n        startElapsed: TimeInterval? = nil,\n        isRenderFallback: Bool = false\n    )"
         )
         XCTAssertTrue(playTrackBody.contains("prepareForPlayback(target: .singleFile(track.id))"))
         XCTAssertTrue(
@@ -215,6 +215,89 @@ final class AudioPlaybackControllerSourceTests: XCTestCase {
         XCTAssertFalse(
             syncBody.contains("store.nowPlayingTrack ??"),
             "nowPlayingTrackID must not be the resolution source here (seekRender mutates it for non-playing tracks)."
+        )
+    }
+
+    func testSeekRenderRefusesTracksWithoutALiveSession() throws {
+        let source = try readSource("Sources/Backbeat/Services/AudioPlaybackController.swift")
+
+        let seekBody = try methodBody(source, signature: "func seekRender(toProgress progress: Double, track: BackbeatTrack, store: LibraryStore)")
+        XCTAssertTrue(
+            seekBody.contains("let ownsLiveSession = mode == .render(track.id)"),
+            "During a live session, only its own track may scrub — resolution goes through the controller's own mode (D-100), never nowPlayingTrackID (COR-002)."
+        )
+        XCTAssertTrue(
+            seekBody.contains("let transportIsFree = !store.isPlaybackSessionActive"),
+            "With no live session the transport is free: a scrub may anchor any track to pick a start point or a replay position (D-108); only a bystander scrub DURING another track's live session is refused."
+        )
+        let guardRange = try XCTUnwrap(
+            seekBody.range(of: "guard ownsLiveSession || transportIsFree else { return }"),
+            "seekRender must be a no-op exactly when another track owns the live session (COR-002, D-108)."
+        )
+        let identityAssignment = try XCTUnwrap(seekBody.range(of: "store.nowPlayingTrackID = track.id"))
+        XCTAssertLessThan(
+            guardRange.lowerBound,
+            identityAssignment.lowerBound,
+            "The ownership guard must run before the anchor write, or a detail-view scrub during another track's session can still hijack the transport (COR-002)."
+        )
+    }
+
+    func testPracticeEditsRefuseBystanderTracksDuringAnotherTracksLiveSession() throws {
+        let source = try readSource("Sources/Backbeat/Services/AudioPlaybackController.swift")
+
+        // The shared guard mirrors seekRender's rule (D-108), extended to
+        // every practice edit after owner QA (2026-07-13) caught a bystander
+        // track's loop-marker drag yanking the live session's playhead: the
+        // practice loop and speed are global store state resolving to the
+        // LIVE engine (D-100), so the edit itself must be refused.
+        let helperBody = try methodBody(
+            source,
+            signature: "private func allowsPracticeEdit(track: BackbeatTrack, store: LibraryStore) -> Bool"
+        )
+        XCTAssertTrue(helperBody.contains("let ownsLiveSession = mode == .render(track.id)"))
+        XCTAssertTrue(helperBody.contains("let transportIsFree = !store.isPlaybackSessionActive"))
+
+        for signature in [
+            "func setPracticeSpeed(_ speed: Double, track: BackbeatTrack, store: LibraryStore)",
+            "func stepPracticeSpeed(by delta: Double, track: BackbeatTrack, store: LibraryStore)",
+            "func setPracticeLoopMode(_ mode: PracticeLoopMode, track: BackbeatTrack, store: LibraryStore)",
+            "func setPracticeLoopStart(_ elapsed: TimeInterval, track: BackbeatTrack, store: LibraryStore)",
+            "func setPracticeLoopEnd(_ elapsed: TimeInterval, track: BackbeatTrack, store: LibraryStore)",
+            "func clearPracticeLoop(track: BackbeatTrack, store: LibraryStore)"
+        ] {
+            let body = try methodBody(source, signature: signature)
+            XCTAssertTrue(
+                body.contains("guard allowsPracticeEdit(track: track, store: store) else { return }"),
+                "\(signature) must refuse a bystander edit during another track's live session"
+            )
+        }
+
+        // And the affordance disables rather than sitting dead (the D-108
+        // review's enabled-but-dead-control lesson).
+        let controls = try readSource("Sources/Backbeat/Views/PracticeControlsView.swift")
+        XCTAssertTrue(controls.contains("isPracticeEditingEnabled"))
+        XCTAssertTrue(controls.contains(".disabled(!isPracticeEditingEnabled)"))
+        let player = try readSource("Sources/Backbeat/Views/PlayerView.swift")
+        XCTAssertTrue(player.contains("isPracticeEditingEnabled: !store.isPlaybackSessionActive || store.nowPlayingTrackID == track.id"))
+    }
+
+    func testDrumMixPushResolvesThroughTheControllersOwnMode() throws {
+        let source = try readSource("Sources/Backbeat/Services/AudioPlaybackController.swift")
+
+        let mixBody = try methodBody(source, signature: "func setDrumMixBoostDB(_ boostDB: Double, track: BackbeatTrack, store: LibraryStore)")
+        XCTAssertTrue(
+            mixBody.contains("store.setDrumMixBoostDB(boostDB, for: track.id)"),
+            "Saving an edited track's boost must stay unconditional — any track's saved settings may be edited even while a different track plays (D-060)."
+        )
+        let saveRange = try XCTUnwrap(mixBody.range(of: "store.setDrumMixBoostDB(boostDB, for: track.id)"))
+        let guardRange = try XCTUnwrap(
+            mixBody.range(of: "guard case .render(let activeTrackID) = mode, activeTrackID == track.id"),
+            "The live-engine push must resolve through the controller's own mode (D-100): editing an inspected track's saved boost must not bleed into another track's live audio (D-060)."
+        )
+        XCTAssertLessThan(
+            saveRange.lowerBound,
+            guardRange.lowerBound,
+            "The store save must happen before the live-engine guard so editing a non-playing track's boost still persists even with no live session."
         )
     }
 

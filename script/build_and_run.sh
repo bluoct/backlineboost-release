@@ -6,7 +6,7 @@ APP_NAME="Backline Boost"
 PRODUCT_NAME="Backbeat"   # Swift executable target name; the built binary is named this
 BUNDLE_ID="com.bluoct.backlineboost"
 MIN_SYSTEM_VERSION="14.0"
-APP_VERSION="2.1.0"
+APP_VERSION="2.2.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -41,6 +41,17 @@ pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 cd "$ROOT_DIR"
 export CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.build/module-cache"
+
+# Preflight: on a fresh Command-Line-Tools-only machine, `xcrun metal` is missing
+# until the Metal Toolchain component is installed, and build_mlx_metallib.sh
+# below fails on it — but only after the full `swift build` has already run.
+# Catch it here, before that build, when the metallib isn't already cached.
+PREFLIGHT_BIN_PATH="$(swift build --disable-sandbox --show-bin-path)"
+if [[ ! -f "$PREFLIGHT_BIN_PATH/mlx.metallib" ]] && ! xcrun -f metal >/dev/null 2>&1; then
+  echo "error: Metal Toolchain not installed and mlx.metallib is not cached; run: xcodebuild -downloadComponent MetalToolchain" >&2
+  exit 1
+fi
+
 swift build --disable-sandbox
 BIN_PATH="$(swift build --disable-sandbox --show-bin-path)"
 BUILD_BINARY="$BIN_PATH/$PRODUCT_NAME"

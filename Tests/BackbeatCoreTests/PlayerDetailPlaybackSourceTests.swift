@@ -104,7 +104,20 @@ final class PlayerDetailPlaybackSourceTests: XCTestCase {
         XCTAssertTrue(source.contains("store.setActiveQueueSource(.drumBoost)"))
         XCTAssertTrue(source.contains("store.setPlaybackPlaying(false)"))
         XCTAssertTrue(source.contains("store.setPlaybackElapsed(startElapsed, duration: transportDuration(for: track))"))
-        XCTAssertTrue(source.contains("store.playbackErrorMessage = error.localizedDescription"))
+        XCTAssertTrue(source.contains("store.playbackFailure = .renderUnplayable"))
+        XCTAssertFalse(source.contains("playbackErrorMessage"))
+        XCTAssertFalse(source.contains("store.playbackFailure = error"))
+        XCTAssertTrue(source.contains("isRenderFallback"))
+        XCTAssertTrue(source.contains(".fallbackFailed"))
+        XCTAssertTrue(source.contains("store.noteOriginalSourceMissing(for: track.id)"))
+        XCTAssertTrue(source.contains("store.playbackFailure = .sourceFileMissing"))
+        // Classification and recovery key on what actually played, not the
+        // preferred source — a render-preferring source resolves to Original
+        // when no renders exist yet.
+        XCTAssertTrue(source.contains("if asset.effectiveSource == .original, store.noteOriginalSourceMissing(for: track.id)"))
+        XCTAssertTrue(source.contains("if asset.effectiveSource != .original, store.recoverMissingRenderFiles(for: track.id)"))
+        XCTAssertFalse(source.contains("source == .original ? .originalUnplayable"))
+        XCTAssertTrue(source.contains("store.noteOriginalSourceRestored(for: track.id)"))
     }
 
     func testPracticeLoopBoundsSyncTheActiveRenderEngineChain() throws {

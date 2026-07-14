@@ -188,11 +188,20 @@ public final class TrackImportPipeline {
             let managedURL = try managedLibrary.storeSourceFile(url)
             let trackID = UUID()
             // Metadata carries no artwork type info; the store sniffs magic bytes.
-            let artworkURL = try artworkStore.storeArtwork(
-                artworkData,
-                contentType: nil,
-                trackID: trackID
-            )
+            let artworkURL: URL?
+            do {
+                artworkURL = try artworkStore.storeArtwork(
+                    artworkData,
+                    contentType: nil,
+                    trackID: trackID
+                )
+            } catch {
+                // A recordless managed copy is invisible to the library and leaks
+                // forever (COR-012b): roll back the just-created UUID directory —
+                // ours alone, so no other track's files can be touched.
+                try? FileManager.default.removeItem(at: managedURL.deletingLastPathComponent())
+                throw error
+            }
             DebugLog.importing.notice("import.artwork stored=\(artworkURL != nil) source=\(artworkSource, privacy: .public) file=\(artworkURL?.lastPathComponent ?? "none", privacy: .public)")
             return ImportOutcome.imported(
                 metadata: metadata,

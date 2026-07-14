@@ -13,6 +13,7 @@ struct LibraryView: View {
     @State private var selectedTrackIDs: Set<BackbeatTrack.ID> = []
     @State private var deletionCandidates: [BackbeatTrack]?
     @State private var deleteErrorMessage: String?
+    @State private var reRenderCandidate: BackbeatTrack?
 
     // The pipeline is O(n log n) locale-aware work: body evaluates it ONCE
     // per pass and hands the result down — helpers take it as a parameter
@@ -44,6 +45,17 @@ struct LibraryView: View {
                 }
             } message: {
                 Text(deleteErrorMessage ?? "")
+            }
+            .alert("Re-render this track?", isPresented: reRenderConfirmationBinding, presenting: reRenderCandidate) { track in
+                Button("No", role: .cancel) {
+                    reRenderCandidate = nil
+                }
+                Button("Yes") {
+                    renderQueue.enqueue(track.id)
+                    reRenderCandidate = nil
+                }
+            } message: { _ in
+                Text("The current Drums and Drumless files keep playing until the new render finishes. Re-rendering uses the render folder and quality currently set in Settings.")
             }
     }
 
@@ -401,12 +413,29 @@ struct LibraryView: View {
                     .help("Retry render")
                 }
 
+                if track.status == .ready {
+                    Button {
+                        reRenderCandidate = track
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(BackbeatButtonStyle(variant: .icon))
+                    .accessibilityLabel("Re-render")
+                    .help("Re-render")
+                }
+
+                // waveform, not play.fill: this opens the Player view without
+                // changing what's playing, and a play triangle lied about that
+                // (owner QA 2026-07-13). The primary/icon variant split still
+                // signals ready-vs-not at a glance.
                 Button {
                     rowActions.open(track)
                 } label: {
-                    Image(systemName: track.status == .ready ? "play.fill" : "chevron.right")
+                    Image(systemName: "waveform")
                 }
                 .buttonStyle(BackbeatButtonStyle(variant: track.status == .ready ? .primary : .icon))
+                .accessibilityLabel("Open in Player")
+                .help("Open in Player")
 
                 Button {
                     deletionCandidates = [track]
@@ -450,6 +479,13 @@ struct LibraryView: View {
         Binding(
             get: { deleteErrorMessage != nil },
             set: { if !$0 { deleteErrorMessage = nil } }
+        )
+    }
+
+    private var reRenderConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { reRenderCandidate != nil },
+            set: { if !$0 { reRenderCandidate = nil } }
         )
     }
 

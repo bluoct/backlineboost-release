@@ -8,6 +8,11 @@ struct LoopTimelineView: View {
     var envelope: WaveformEnvelope?
     var showsWaveform = false
     var height: CGFloat = 14
+    // False when the transport would refuse this track's scrub (a bystander
+    // during another track's live session, D-108): the playhead hides and the
+    // scrub gesture is inert so the timeline doesn't read as a dead control.
+    // Loop markers stay interactive — the practice loop is global (D-100).
+    var isScrubEnabled = true
     var onScrub: (Double) -> Void
     var onMoveLoopStart: (TimeInterval) -> Void = { _ in }
     var onMoveLoopEnd: (TimeInterval) -> Void = { _ in }
@@ -37,9 +42,11 @@ struct LoopTimelineView: View {
                         .offset(x: xPosition(for: loopRange.start, width: width))
                 }
 
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(BackbeatStyle.primary.opacity(showsWaveform ? 0.35 : 1))
-                    .frame(width: width * clampedProgress)
+                if isScrubEnabled {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(BackbeatStyle.primary.opacity(showsWaveform ? 0.35 : 1))
+                        .frame(width: width * clampedProgress)
+                }
 
                 if let loopRange {
                     marker(label: "A", elapsed: loopRange.start, width: width, height: proxy.size.height) {
@@ -60,6 +67,7 @@ struct LoopTimelineView: View {
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .named("LoopTimeline"))
                     .onChanged { value in
+                        guard isScrubEnabled else { return }
                         onScrub(progress(at: value.location.x, width: width))
                     }
             )

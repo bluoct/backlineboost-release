@@ -50,9 +50,13 @@ struct TrackTile: View {
     let index: Int
     var size: CGFloat = 42
     var fontSize: CGFloat = 16
+    @State private var artworkImage: NSImage?
+    // Which URL artworkImage was loaded for: a tile whose track changes under
+    // a stable view identity (MiniPlayer/Player advancing songs) must never
+    // show the previous track's art next to the new track's title.
+    @State private var artworkImageURL: URL?
 
     var body: some View {
-        let artworkImage = cachedArtworkImage
         ZStack {
             if let artworkImage {
                 Image(nsImage: artworkImage)
@@ -78,11 +82,22 @@ struct TrackTile: View {
             RoundedRectangle(cornerRadius: size * 0.18, style: .continuous)
                 .stroke(.white.opacity(artworkImage == nil ? 0 : 0.12), lineWidth: 1)
         }
-    }
-
-    private var cachedArtworkImage: NSImage? {
-        guard let artworkURL = track.artworkURL else { return nil }
-        return ArtworkImageCache.image(for: artworkURL)
+        .task(id: track.artworkURL) {
+            if artworkImageURL != track.artworkURL {
+                artworkImage = nil
+            }
+            guard let artworkURL = track.artworkURL else {
+                artworkImageURL = nil
+                return
+            }
+            // 2x covers Retina; a fixed factor beats per-request NSScreen queries
+            // for tiles this small.
+            let pixelSize = Int(size * 2)
+            let thumbnail = await ArtworkThumbnails.store.thumbnail(for: artworkURL, pixelSize: pixelSize)
+            guard !Task.isCancelled else { return }
+            artworkImage = thumbnail?.image
+            artworkImageURL = artworkURL
+        }
     }
 }
 

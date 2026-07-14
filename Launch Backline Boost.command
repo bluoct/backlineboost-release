@@ -7,13 +7,16 @@ cd "$ROOT_DIR"
 echo "Building and launching Backline Boost..."
 echo
 
-if ! ./script/build_and_run.sh run; then
-  status=$?
+# `exit_code`, not `status`: zsh's `status` is a read-only alias of `$?`,
+# and assigning to it aborts the script under `set -e`.
+exit_code=0
+./script/build_and_run.sh run || exit_code=$?
+if (( exit_code != 0 )); then
   echo
-  echo "Backline Boost launcher failed with exit code $status."
+  echo "Backline Boost launcher failed with exit code $exit_code."
   echo "Press Return to close this window."
   read -r _
-  exit "$status"
+  exit "$exit_code"
 fi
 
 echo

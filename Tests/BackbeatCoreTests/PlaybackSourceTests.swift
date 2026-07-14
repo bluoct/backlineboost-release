@@ -10,8 +10,8 @@ final class PlaybackSourceTests: XCTestCase {
         XCTAssertEqual(PlaybackSource.drums.displayLabel, "Drums")
     }
 
-    func testPlaybackSourceControlCasesExcludeUnroutedDrumsSource() {
-        XCTAssertEqual(PlaybackSource.controlCases, [.original, .drumBoost, .drumless])
+    func testPlaybackSourceControlCasesOfferEverySourceIncludingDrums() {
+        XCTAssertEqual(PlaybackSource.controlCases, [.original, .drumBoost, .drumless, .drums])
     }
 
     func testLegacyBoostedDrumsPlaybackSourceDecodesAsDrumBoost() throws {

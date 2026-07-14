@@ -5,6 +5,7 @@ public final class LibraryDecodeDiagnostics: @unchecked Sendable {
     private var droppedTracks = 0
     private var droppedPlaylists = 0
     private var defaultedFields = 0
+    private var repairedReferences = 0
 
     public var droppedTrackCount: Int {
         lock.lock()
@@ -22,6 +23,12 @@ public final class LibraryDecodeDiagnostics: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return defaultedFields
+    }
+
+    public var repairedReferenceCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return repairedReferences
     }
 
     public init() {}
@@ -43,6 +50,12 @@ public final class LibraryDecodeDiagnostics: @unchecked Sendable {
         defer { lock.unlock() }
         defaultedFields += 1
     }
+
+    func recordRepairedReference() {
+        lock.lock()
+        defer { lock.unlock() }
+        repairedReferences += 1
+    }
 }
 
 // Decodes any value without inspecting it, so a lossy array can skip past a
@@ -56,7 +69,9 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
     public static let decodeDiagnosticsKey = CodingUserInfoKey(rawValue: "backbeat.libraryDecodeDiagnostics")!
 
     public let schemaVersion: Int
-    public let tracks: [BackbeatTrack]
+    // internal(set): mutable only inside BackbeatCore, for the migration's
+    // structural pass-through — external code must not rewrite history.
+    public internal(set) var tracks: [BackbeatTrack]
     public let selectedTrackID: BackbeatTrack.ID?
     public let nowPlayingTrackID: BackbeatTrack.ID?
     public let selectedPlaybackVariant: RenderVariant
@@ -244,28 +259,85 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         )
     }
 
+    // The one shape every reference repair goes through: validate the ID
+    // against the surviving set, record the repair, nil out. A hand-rolled
+    // copy per reference is how activeQueue.playlistID got skipped the
+    // first time (COR-014 review round).
+    private static func sanitizedID<ID: Hashable>(
+        _ id: ID?,
+        in validIDs: Set<ID>,
+        diagnostics: LibraryDecodeDiagnostics?
+    ) -> ID? {
+        guard let id else { return nil }
+        guard validIDs.contains(id) else {
+            diagnostics?.recordRepairedReference()
+            return nil
+        }
+        return id
+    }
+
     @MainActor
-    public func makeStore() -> LibraryStore {
-        // A lossy decode can drop tracks while the queue decodes verbatim, so
-        // scrub dangling queue IDs before they reach the store.
+    public func makeStore(diagnostics: LibraryDecodeDiagnostics? = nil) -> LibraryStore {
+        // A lossy decode can drop tracks while references decode verbatim
+        // (COR-014 — this is what made the sidebar playlist count disagree
+        // with the detail view): scrub every dangling ID before it reaches
+        // the store, recording each repair so a decode that dropped no
+        // track records or scalars, but still had to prune references, is
+        // still surfaced as lossy.
         let validIDs = Set(tracks.map(\.id))
-        let sanitizedQueue: PlaybackQueue? = activeQueue.flatMap { queue in
+
+        let sanitizedSelectedTrackID = Self.sanitizedID(selectedTrackID, in: validIDs, diagnostics: diagnostics)
+        let sanitizedNowPlayingTrackID = Self.sanitizedID(nowPlayingTrackID, in: validIDs, diagnostics: diagnostics)
+
+        let sanitizedPlaylists: [BackbeatPlaylist] = playlists.map { playlist in
+            let keptTrackIDs = playlist.trackIDs.filter { validIDs.contains($0) }
+            guard keptTrackIDs.count != playlist.trackIDs.count else { return playlist }
+            diagnostics?.recordRepairedReference()
+            var sanitized = playlist
+            sanitized.trackIDs = keptTrackIDs
+            return sanitized
+        }
+        let playlistIDs = Set(sanitizedPlaylists.map(\.id))
+        let sanitizedSelectedPlaylistID = Self.sanitizedID(selectedPlaylistID, in: playlistIDs, diagnostics: diagnostics)
+
+        let sanitizedQueue: PlaybackQueue? = activeQueue.flatMap { queue -> PlaybackQueue? in
+            // An originally-empty queue is normalized to nil without a repair
+            // record — nothing was dangling, and a false "repaired" flag would
+            // back up and alert over a healthy file.
+            guard !queue.trackIDs.isEmpty else { return nil }
             let keptIDs = queue.trackIDs.filter { validIDs.contains($0) }
-            guard !keptIDs.isEmpty else { return nil }
+            guard !keptIDs.isEmpty else {
+                diagnostics?.recordRepairedReference()
+                return nil
+            }
             var sanitized = queue
-            sanitized.trackIDs = keptIDs
-            sanitized.currentIndex = queue.currentTrackID.flatMap { keptIDs.firstIndex(of: $0) }
-                ?? min(queue.currentIndex, keptIDs.count - 1)
+            sanitized.playlistID = Self.sanitizedID(queue.playlistID, in: playlistIDs, diagnostics: diagnostics)
+            if keptIDs.count != queue.trackIDs.count {
+                diagnostics?.recordRepairedReference()
+                sanitized.trackIDs = keptIDs
+                // COR-006's mechanism, mirrored from LibraryStore.deleteTrack:
+                // subtract the removed occurrences ahead of the cursor rather
+                // than using firstIndex — legacy snapshots decode verbatim and
+                // may hold duplicate IDs, and firstIndex would snap the cursor
+                // to the first duplicate.
+                if queue.trackIDs.indices.contains(queue.currentIndex),
+                   validIDs.contains(queue.trackIDs[queue.currentIndex]) {
+                    let removedBefore = queue.trackIDs[..<queue.currentIndex].count(where: { !validIDs.contains($0) })
+                    sanitized.currentIndex = queue.currentIndex - removedBefore
+                } else {
+                    sanitized.currentIndex = min(max(0, queue.currentIndex), keptIDs.count - 1)
+                }
+            }
             return sanitized
         }
         return LibraryStore(
             tracks: tracks,
-            selectedTrackID: selectedTrackID,
-            nowPlayingTrackID: nowPlayingTrackID,
+            selectedTrackID: sanitizedSelectedTrackID,
+            nowPlayingTrackID: sanitizedNowPlayingTrackID,
             selectedPlaybackVariant: selectedPlaybackVariant,
             nowPlayingPlaybackVariant: nowPlayingPlaybackVariant,
-            playlists: playlists,
-            selectedPlaylistID: selectedPlaylistID,
+            playlists: sanitizedPlaylists,
+            selectedPlaylistID: sanitizedSelectedPlaylistID,
             activeQueue: sanitizedQueue,
             selectedPlaybackSource: selectedPlaybackSource,
             nowPlayingPlaybackSource: nowPlayingPlaybackSource,
@@ -370,15 +442,23 @@ public struct LibraryPersistence: Sendable {
         try data.write(to: snapshotURL, options: .atomic)
     }
 
+    // INVARIANT: the counts (and isLossy) are live views over the shared
+    // diagnostics object, which `makeStore(diagnostics:)` mutates as it
+    // repairs references — read isLossy only AFTER constructing the store,
+    // or a repairs-only load reads as clean and skips the pre-overwrite
+    // backup. loadStoreOrDefault is the reference ordering.
     struct LibraryLoadResult {
         let snapshot: LibrarySnapshot
-        let droppedTrackCount: Int
-        let droppedPlaylistCount: Int
-        let defaultedFieldCount: Int
+        let diagnostics: LibraryDecodeDiagnostics
         let sourceURL: URL
 
+        var droppedTrackCount: Int { diagnostics.droppedTrackCount }
+        var droppedPlaylistCount: Int { diagnostics.droppedPlaylistCount }
+        var defaultedFieldCount: Int { diagnostics.defaultedFieldCount }
+        var repairedReferenceCount: Int { diagnostics.repairedReferenceCount }
+
         var isLossy: Bool {
-            droppedTrackCount > 0 || droppedPlaylistCount > 0 || defaultedFieldCount > 0
+            droppedTrackCount > 0 || droppedPlaylistCount > 0 || defaultedFieldCount > 0 || repairedReferenceCount > 0
         }
     }
 
@@ -404,9 +484,7 @@ public struct LibraryPersistence: Sendable {
             try save(migratedSnapshot)
             return LibraryLoadResult(
                 snapshot: migratedSnapshot,
-                droppedTrackCount: legacyResult.droppedTrackCount,
-                droppedPlaylistCount: legacyResult.droppedPlaylistCount,
-                defaultedFieldCount: legacyResult.defaultedFieldCount,
+                diagnostics: legacyResult.diagnostics,
                 sourceURL: legacyResult.sourceURL
             )
         } catch {
@@ -425,79 +503,45 @@ public struct LibraryPersistence: Sendable {
         let snapshot = try decoder.decode(LibrarySnapshot.self, from: data)
         return LibraryLoadResult(
             snapshot: snapshot,
-            droppedTrackCount: diagnostics.droppedTrackCount,
-            droppedPlaylistCount: diagnostics.droppedPlaylistCount,
-            defaultedFieldCount: diagnostics.defaultedFieldCount,
+            diagnostics: diagnostics,
             sourceURL: url
         )
     }
 
     private func migrateLegacySnapshot(_ snapshot: LibrarySnapshot) throws -> LibrarySnapshot {
-        let migratedTracks = try snapshot.tracks.map(migrateLegacyTrack(_:))
-        return LibrarySnapshot(
-            schemaVersion: snapshot.schemaVersion,
-            tracks: migratedTracks,
-            selectedTrackID: snapshot.selectedTrackID,
-            nowPlayingTrackID: snapshot.nowPlayingTrackID,
-            selectedPlaybackVariant: snapshot.selectedPlaybackVariant,
-            nowPlayingPlaybackVariant: snapshot.nowPlayingPlaybackVariant,
-            playlists: snapshot.playlists,
-            selectedPlaylistID: snapshot.selectedPlaylistID,
-            activeQueue: snapshot.activeQueue,
-            selectedPlaybackSource: snapshot.selectedPlaybackSource,
-            nowPlayingPlaybackSource: snapshot.nowPlayingPlaybackSource,
-            playbackNormalizationSettings: snapshot.playbackNormalizationSettings,
-            volume: snapshot.volume,
-            isPlaylistsSectionCollapsed: snapshot.isPlaylistsSectionCollapsed,
-            isTracksSectionCollapsed: snapshot.isTracksSectionCollapsed,
-            isPlaylistOverflowExpanded: snapshot.isPlaylistOverflowExpanded,
-            isTracksOverflowExpanded: snapshot.isTracksOverflowExpanded,
-            // Explicit pass-through (never the memberwise default): a
-            // re-migration must not silently reset the sort preference.
-            librarySortOrder: snapshot.librarySortOrder
-        )
+        // Mutate a copy instead of memberwise-rebuilding: every field that is
+        // not explicitly migrated passes through STRUCTURALLY, so a newly added
+        // durable field can never be silently reset by a forgotten re-migration
+        // line (this bit twice before: librarySortOrder and dateAdded).
+        var migrated = snapshot
+        migrated.tracks = try snapshot.tracks.map(migrateLegacyTrack(_:))
+        return migrated
     }
 
     private func migrateLegacyTrack(_ track: BackbeatTrack) throws -> BackbeatTrack {
-        let sourceURL = try copyFileIfPresent(
+        // Mutate a copy instead of memberwise-rebuilding (same rationale as
+        // migrateLegacySnapshot): every field not explicitly migrated below
+        // passes through structurally.
+        var migrated = track
+        migrated.sourceURL = try copyFileIfPresent(
             from: track.sourceURL,
             to: managedSourceDirectory
                 .appendingPathComponent(track.id.uuidString, isDirectory: true)
                 .appendingPathComponent(track.sourceURL.lastPathComponent)
         )
-        let activeRenders = try track.activeRenders.reduce(into: [RenderVariant: RenderRecord]()) { partialResult, pair in
-            let render = pair.value
-            let migratedFileURL = try copyFileIfPresent(
+        migrated.artworkURL = try migrateArtworkURL(track.artworkURL)
+        let migratedRenders = try track.activeRenders.mapValues { render -> RenderRecord in
+            var migratedRender = render
+            migratedRender.fileURL = try copyFileIfPresent(
                 from: render.fileURL,
                 to: renderRootDirectory
                     .appendingPathComponent(folderName(for: render.variant), isDirectory: true)
                     .appendingPathComponent(render.fileURL.lastPathComponent)
             )
-            partialResult[pair.key] = RenderRecord(
-                id: render.id,
-                variant: render.variant,
-                fileURL: migratedFileURL,
-                boostDB: render.boostDB,
-                createdAt: render.createdAt
-            )
+            return migratedRender
         }
-        return BackbeatTrack(
-            id: track.id,
-            title: track.title,
-            artist: track.artist,
-            album: track.album,
-            duration: track.duration,
-            status: track.status,
-            sourceURL: sourceURL,
-            artworkURL: try migrateArtworkURL(track.artworkURL),
-            drumMixSettings: track.drumMixSettings,
-            loudnessProfile: track.loudnessProfile,
-            activeRenders: activeRenders,
-            isDurationResolved: track.isDurationResolved,
-            // Explicit pass-through (never the memberwise default): a
-            // re-migration must not silently drop the import date.
-            dateAdded: track.dateAdded
-        )
+        migrated.replaceActiveRenders(migratedRenders)
+        return migrated
     }
 
     private func migrateArtworkURL(_ url: URL?) throws -> URL? {
@@ -548,10 +592,19 @@ public struct LibraryPersistence: Sendable {
             guard let loaded = try loadReportingRecovery() else {
                 return InitialLibrary.makeDevelopmentStore()
             }
-            let store = loaded.snapshot.makeStore()
+            // isLossy must be evaluated AFTER makeStore: reference repairs
+            // (COR-014) are recorded during store construction, not decode,
+            // and `loaded.diagnostics` is the same object makeStore mutates.
+            let store = loaded.snapshot.makeStore(diagnostics: loaded.diagnostics)
             if loaded.isLossy {
                 let backupURL = backUpLibraryFile(at: loaded.sourceURL)
                 store.libraryLoadRecoveryMessage = lossyLoadMessage(result: loaded, backupURL: backupURL)
+                // Persist the repaired state now (best-effort — the original
+                // is already backed up): the on-disk file still holds the
+                // dangling references, and waiting for the next debounced
+                // save means a crash replays this alert and mints another
+                // backup on every launch.
+                try? save(LibrarySnapshot(store: store))
             }
             return store
         } catch LibraryPersistenceError.migrationFailed(let underlying) {
@@ -617,6 +670,9 @@ public struct LibraryPersistence: Sendable {
         }
         if result.defaultedFieldCount > 0 {
             parts.append("Some settings could not be read and were reset to defaults.")
+        }
+        if result.repairedReferenceCount > 0 {
+            parts.append("References to tracks or playlists that no longer exist were repaired.")
         }
         if let backupURL {
             parts.append("The original file was preserved at \(backupURL.path).")

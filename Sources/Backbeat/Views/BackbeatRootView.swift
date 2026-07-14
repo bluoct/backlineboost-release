@@ -39,21 +39,26 @@ struct BackbeatRootView: View {
     @State private var duplicateWarningMessage: String?
     @State private var dropRejectedMessage: String?
     @State private var isDropTargeted = false
-    @State private var loudnessAnalysisTask: Task<Void, Never>?
     @State private var durationBackfillTask: Task<Void, Never>?
-    @State private var pendingLibrarySave: Task<Void, Never>?
+    @State private var persistenceCoordinator: LibraryPersistenceCoordinator
     // @State (not `let`) so the pipeline's chain instance survives view
     // re-init exactly as the former @State importChain did.
     @State private var pipeline: TrackImportPipeline
-    @State private var librarySaveFailureCount = 0
-    @State private var librarySaveFailureMessage: String?
+    // Same @State-survives-re-init reasoning as `pipeline`.
+    @State private var loudnessAnalysisQueue: LoudnessAnalysisQueue
 
     @MainActor
     init(
         store: LibraryStore? = nil,
         persistence: LibraryPersistence = LibraryPersistence(),
         libraryWriter: LibrarySnapshotWriter? = nil,
-        renderQueue: RenderQueueCoordinator? = nil
+        renderQueue: RenderQueueCoordinator? = nil,
+        // Required, not defaulted: a fallback here would duplicate
+        // BackbeatApp.init's wiring verbatim (and drift from it), and an
+        // exercised fallback would build a second writer whose generation
+        // counter shares no stale-guard with the app's coordinator.
+        persistenceCoordinator: LibraryPersistenceCoordinator,
+        loudnessAnalysisQueue: LoudnessAnalysisQueue
     ) {
         self.persistence = persistence
         self.libraryWriter = libraryWriter ?? LibrarySnapshotWriter(persistence: persistence)
@@ -61,6 +66,7 @@ struct BackbeatRootView: View {
         _store = State(initialValue: resolvedStore)
         let resolvedRenderQueue = renderQueue ?? RenderQueueCoordinator(store: resolvedStore)
         self.renderQueue = resolvedRenderQueue
+        _persistenceCoordinator = State(initialValue: persistenceCoordinator)
         _pipeline = State(initialValue: TrackImportPipeline(
             store: resolvedStore,
             renderQueue: resolvedRenderQueue,
@@ -71,9 +77,67 @@ struct BackbeatRootView: View {
                 await MusicLibraryArtworkProvider().artworkData(forFileAt: url)
             }
         ))
+        _loudnessAnalysisQueue = State(initialValue: loudnessAnalysisQueue)
     }
 
     var body: some View {
+        // Split from the modifier chain below: SwiftUI's type-checker times
+        // out on the combined chain (too many stacked .alert/.onChange calls
+        // in one expression).
+        rootContent
+            .alert("Playback failed", isPresented: playbackFailureBinding) {
+                Button("OK", role: .cancel) {
+                    store.playbackFailure = nil
+                }
+            } message: {
+                Text(store.playbackFailure?.userMessage ?? "")
+            }
+            .onChange(of: persistenceSnapshot) { _, _ in
+                persistenceCoordinator.noteLibraryChanged()
+            }
+            .onChange(of: route) { oldRoute, newRoute in
+                if oldRoute == .player, newRoute != .player {
+                    playback.resetPracticePlayback(store: store)
+                }
+            }
+            .onChange(of: store.playbackNormalizationSettings.isEnabled) { _, _ in
+                // The Normalize toggle lives in the separate Settings scene and can't
+                // reach the playing engines; re-apply gain here so the change reaches
+                // live playback immediately instead of deferring to the next touch (F4).
+                playback.applyOutputGain(store: store)
+            }
+            .task {
+                // Per-file loudness cadence: each committed import re-triggers the
+                // sweep immediately — batch-end triggering would be a silent behavior
+                // change. Assigned here (post-install) rather than in init so the
+                // closure captures the installed @State, and before any drop can land.
+                pipeline.onTrackCommitted = { _ in analyzeMissingLoudnessProfiles() }
+                // Statuses must be honest before anything consumes them: the loudness
+                // sweep would decode dead paths and the launch scan would skip a stale
+                // `.ready` whose files are gone (D-107).
+                store.reconcileLibraryFiles()
+                // Loudness analysis is independent of the separation model; start it up front.
+                // The htdemucs checkpoint ships in the app bundle, so rendering is always
+                // available — enqueue any missing renders unconditionally. One-time: purge the
+                // orphaned `.th` older builds downloaded into Application Support and the
+                // vendored port's stale v1/v2 conversion caches (fail-soft, off the main
+                // actor); the custom engine's live v3 cache is kept.
+                analyzeMissingLoudnessProfiles()
+                backfillImpreciseDurations()
+                Task.detached(priority: .utility) { LegacyWeightsCleanup.purgeLegacyArtifacts() }
+                renderQueue.enqueueMissingRenders()
+            }
+            .onDisappear {
+                // The callback closure captures this view struct, whose @State
+                // wrapper holds the pipeline — a retain cycle while assigned.
+                // Clearing on disappear breaks it when the window closes (imports
+                // can't start without the window); the .task above re-wires it on
+                // every appearance.
+                pipeline.onTrackCommitted = nil
+            }
+    }
+
+    private var rootContent: some View {
         HStack(spacing: 0) {
             SidebarView(
                 store: store,
@@ -171,49 +235,10 @@ struct BackbeatRootView: View {
         }
         .alert("Couldn't save your library", isPresented: librarySaveFailureBinding) {
             Button("OK", role: .cancel) {
-                librarySaveFailureMessage = nil
+                persistenceCoordinator.saveFailureMessage = nil
             }
         } message: {
-            Text(librarySaveFailureMessage ?? "")
-        }
-        .onChange(of: persistenceSnapshot) { _, newSnapshot in
-            scheduleLibrarySave(newSnapshot)
-        }
-        .onChange(of: route) { oldRoute, newRoute in
-            if oldRoute == .player, newRoute != .player {
-                playback.resetPracticePlayback(store: store)
-            }
-        }
-        .onChange(of: store.playbackNormalizationSettings.isEnabled) { _, _ in
-            // The Normalize toggle lives in the separate Settings scene and can't
-            // reach the playing engines; re-apply gain here so the change reaches
-            // live playback immediately instead of deferring to the next touch (F4).
-            playback.applyOutputGain(store: store)
-        }
-        .task {
-            // Per-file loudness cadence: each committed import re-triggers the
-            // sweep immediately — batch-end triggering would be a silent behavior
-            // change. Assigned here (post-install) rather than in init so the
-            // closure captures the installed @State, and before any drop can land.
-            pipeline.onTrackCommitted = { _ in analyzeMissingLoudnessProfiles() }
-            // Loudness analysis is independent of the separation model; start it up front.
-            // The htdemucs checkpoint ships in the app bundle, so rendering is always
-            // available — enqueue any missing renders unconditionally. One-time: purge the
-            // orphaned `.th` older builds downloaded into Application Support and the
-            // vendored port's stale v1/v2 conversion caches (fail-soft, off the main
-            // actor); the custom engine's live v3 cache is kept.
-            analyzeMissingLoudnessProfiles()
-            backfillImpreciseDurations()
-            Task.detached(priority: .utility) { LegacyWeightsCleanup.purgeLegacyArtifacts() }
-            renderQueue.enqueueMissingRenders()
-        }
-        .onDisappear {
-            // The callback closure captures this view struct, whose @State
-            // wrapper holds the pipeline — a retain cycle while assigned.
-            // Clearing on disappear breaks it when the window closes (imports
-            // can't start without the window); the .task above re-wires it on
-            // every appearance.
-            pipeline.onTrackCommitted = nil
+            Text(persistenceCoordinator.saveFailureMessage ?? "")
         }
     }
 
@@ -276,8 +301,15 @@ struct BackbeatRootView: View {
 
     private var librarySaveFailureBinding: Binding<Bool> {
         Binding(
-            get: { librarySaveFailureMessage != nil },
-            set: { if !$0 { librarySaveFailureMessage = nil } }
+            get: { persistenceCoordinator.saveFailureMessage != nil },
+            set: { if !$0 { persistenceCoordinator.saveFailureMessage = nil } }
+        )
+    }
+
+    private var playbackFailureBinding: Binding<Bool> {
+        Binding(
+            get: { store.playbackFailure != nil },
+            set: { if !$0 { store.playbackFailure = nil } }
         )
     }
 
@@ -330,33 +362,26 @@ struct BackbeatRootView: View {
         }
     }
 
+    // Serial + deduplicated (EFF-001): builds the current "missing a profile"
+    // snapshot and hands it to `loudnessAnalysisQueue`, which drops anything
+    // already pending or in flight rather than cancelling and restarting it.
+    // Safe to call on every trigger (launch + every per-file commit) for the
+    // same reason the old cancel-and-restart sweep was — the queue is the
+    // single source of truth for what's actually running.
     @MainActor
     private func analyzeMissingLoudnessProfiles() {
-        loudnessAnalysisTask?.cancel()
         let pendingTracks = store.tracks.filter { track in
+            guard track.status != .sourceMissing else { return false }
             guard let profile = track.loudnessProfile else { return true }
             return profile.analyzerVersion < TrackLoudnessAnalyzerVersion.current
         }
         guard !pendingTracks.isEmpty else { return }
 
         let settings = store.playbackNormalizationSettings
-        loudnessAnalysisTask = Task { @MainActor in
-            let analyzer = TrackLoudnessAnalyzer(settings: settings)
-            for track in pendingTracks {
-                guard !Task.isCancelled else { return }
-                do {
-                    let profile = try await analyzer.analyze(sourceURL: track.sourceURL)
-                    // Commit the finished profile even if a newer import cancelled
-                    // this task mid-batch — discarding it here forced a duplicate
-                    // full-file decode on the next pass (F15). The pre-analyze
-                    // guard above still skips starting work once cancelled.
-                    store.setLoudnessProfile(profile, for: track.id)
-                    persistLibrary()
-                } catch {
-                    continue
-                }
-            }
+        let items = pendingTracks.map { track in
+            LoudnessAnalysisQueue.Item(trackID: track.id, sourceURL: track.sourceURL, settings: settings)
         }
+        Task { await loudnessAnalysisQueue.enqueue(items) }
     }
 
     // Launch-once: new imports are born resolved (isDurationResolved: true),
@@ -365,7 +390,9 @@ struct BackbeatRootView: View {
     @MainActor
     private func backfillImpreciseDurations() {
         durationBackfillTask?.cancel()
-        let pendingItems = store.tracks.filter { !$0.isDurationResolved }.map { track in
+        // Same .sourceMissing skip as the loudness sweep: probing a dead path
+        // would burn the one-shot isDurationResolved flag on a .keptEstimate.
+        let pendingItems = store.tracks.filter { !$0.isDurationResolved && $0.status != .sourceMissing }.map { track in
             TrackDurationBackfill.Item(
                 trackID: track.id,
                 sourceURL: track.sourceURL,
@@ -380,7 +407,7 @@ struct BackbeatRootView: View {
                 probe: { url in try await AudioMetadataReader().preciseDuration(url: url) },
                 onResolve: { trackID, outcome in
                     guard store.applyDurationBackfill(id: trackID, outcome: outcome) else { return }
-                    persistLibrary()
+                    persistenceCoordinator.noteLibraryChanged()
                 }
             )
         }
@@ -407,41 +434,6 @@ struct BackbeatRootView: View {
         route = .library
         if let firstError {
             throw firstError
-        }
-    }
-
-    private func persistLibrary() {
-        scheduleLibrarySave(LibrarySnapshot(store: store))
-    }
-
-    // Debounced so slider drags coalesce into one save, written off the main
-    // actor so the UI never blocks, and generation-stamped so a slow older
-    // write can never replace a newer snapshot.
-    private func scheduleLibrarySave(_ snapshot: LibrarySnapshot) {
-        pendingLibrarySave?.cancel()
-        let writer = libraryWriter
-        let generation = writer.nextGeneration()
-        pendingLibrarySave = Task { @MainActor in
-            do {
-                try await Task.sleep(for: .milliseconds(500))
-            } catch {
-                return
-            }
-            do {
-                try await Task.detached(priority: .utility) {
-                    try writer.write(snapshot, generation: generation)
-                }.value
-                librarySaveFailureCount = 0
-            } catch {
-                // A persistent failure (disk full / permissions) silently lost
-                // every change before this; log it and, after a few consecutive
-                // failures, tell the user rather than only print()ing (F12).
-                DebugLog.persistence.error("library.save.debounced.failed generation=\(generation) error=\(error.localizedDescription, privacy: .public)")
-                librarySaveFailureCount += 1
-                if librarySaveFailureCount >= 3, librarySaveFailureMessage == nil {
-                    librarySaveFailureMessage = "Backline Boost hasn't been able to save your library for the last \(librarySaveFailureCount) changes (\(error.localizedDescription)). Check that the disk isn't full and that you can write to the app's Application Support folder."
-                }
-            }
         }
     }
 }

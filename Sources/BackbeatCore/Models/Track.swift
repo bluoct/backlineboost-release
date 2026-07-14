@@ -88,7 +88,9 @@ public struct DrumMixSettings: Equatable, Codable, Sendable {
 public struct RenderRecord: Identifiable, Equatable, Codable, Sendable {
     public let id: UUID
     public let variant: RenderVariant
-    public let fileURL: URL
+    // internal(set): mutable only inside BackbeatCore, for the migration's
+    // structural pass-through — records stay tamper-proof to the app layer.
+    public internal(set) var fileURL: URL
     public let boostDB: Double
     public let createdAt: Date
 
@@ -195,6 +197,13 @@ public struct BackbeatTrack: Identifiable, Equatable, Codable, Sendable {
         activeRenders[variant]
     }
 
+    /// The two-stem pipeline's readiness predicate: reconciliation, the launch
+    /// render scan, and recovery must agree on it or a track can flip to a
+    /// status the queue then refuses to render.
+    public var hasCompleteRenderPair: Bool {
+        activeRender(for: .drums) != nil && activeRender(for: .drumless) != nil
+    }
+
     public mutating func promote(render: RenderRecord) {
         activeRenders[render.variant] = render
         status = .ready
@@ -202,5 +211,12 @@ public struct BackbeatTrack: Identifiable, Equatable, Codable, Sendable {
 
     public mutating func removeRender(for variant: RenderVariant) {
         activeRenders.removeValue(forKey: variant)
+    }
+
+    /// Migration-only seam: replaces the full render map without touching
+    /// status (unlike `promote`). `promote`/`removeRender` remain the
+    /// app-facing mutators.
+    mutating func replaceActiveRenders(_ renders: [RenderVariant: RenderRecord]) {
+        activeRenders = renders
     }
 }

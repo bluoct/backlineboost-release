@@ -7,7 +7,7 @@ public enum PlaybackSource: String, CaseIterable, Hashable, Sendable {
     case drums
 
     public static var boostedDrums: PlaybackSource { .drumBoost }
-    public static var controlCases: [PlaybackSource] { [.original, .drumBoost, .drumless] }
+    public static var controlCases: [PlaybackSource] { [.original, .drumBoost, .drumless, .drums] }
 
     public init(renderVariant: RenderVariant) {
         switch renderVariant {

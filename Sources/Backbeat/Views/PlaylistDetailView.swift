@@ -151,12 +151,25 @@ struct PlaylistDetailView: View {
             Text(BackbeatFormat.duration(track.duration))
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(BackbeatStyle.secondaryText)
+            // Same open-in-Player affordance as the library rows (waveform
+            // glyph — it navigates, it does not play): the playlist view had
+            // no path to a track's Player at all (owner QA 2026-07-13).
+            Button {
+                TrackRowActions(store: store, playback: playback, route: $route).open(track)
+            } label: {
+                Image(systemName: "waveform")
+            }
+            .buttonStyle(BackbeatButtonStyle(variant: track.status == .ready ? .primary : .icon))
+            .accessibilityLabel("Open in Player")
+            .help("Open in Player")
             Button {
                 store.removeTrack(track.id, from: playlistID)
             } label: {
                 Image(systemName: "minus.circle")
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Remove from playlist")
+            .help("Remove from playlist (keeps the track in your library)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -201,7 +214,11 @@ struct PlaylistDetailView: View {
                 }
                 Spacer()
                 Button("Add") {
-                    let orderedIDs = store.tracks.map(\.id).filter { selectedTrackIDs.contains($0) }
+                    let orderedIDs = LibraryTrackQuery.orderedSelection(
+                        selectedTrackIDs,
+                        in: store.tracks,
+                        sort: store.librarySortOrder
+                    )
                     store.addTracks(orderedIDs, to: playlistID)
                     showingAddTracks = false
                 }

@@ -11,6 +11,7 @@ Backline Boost separates a song into drums and backing track — **entirely on-d
 - **Original** — the imported song, as-is.
 - **Drum Boost** — a live mix of the separated drums over the backing track, at the drum level you set per song.
 - **Drumless** — the backing track with the drums removed, for playing along.
+- **Drums** — the isolated drum track by itself, for hearing the part you're learning.
 
 Plus the tools you actually practice with: pitch-preserving **speed control (0.5×–1.5×)**, **A/B section looping** on a waveform timeline, a per-song drum-boost level that follows the song into playlists, and local playlists and a play queue.
 
@@ -37,6 +38,7 @@ Then: import a track → it separates into stems automatically in the background
 
 - macOS 14 or newer
 - A Swift 6 toolchain (Xcode or Apple Command Line Tools)
+- The Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) — needed to compile MLX's Metal kernel library on the first build
 - Network access on the **first** build only, to fetch the model checkpoint (cached per machine afterward, so later builds are offline)
 
 ## Documentation
